@@ -15,26 +15,26 @@
 
 ## 安装与训练
 
-需要 Python 3.10 或更新版本。按照 [PyTorch 安装说明](https://pytorch.org/get-started/locally/)安装与计算设备匹配的 PyTorch，再安装其余依赖。
+需要 Python 3.11 或更新版本。按照 [PyTorch 安装说明](https://pytorch.org/get-started/locally/)安装与计算设备匹配的 PyTorch，再安装其余依赖。
 
 ```powershell
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
-python -m denoise.train --config configs/overlap.json --output runs/selection
+python -m denoise.train --config configs/overlap.json --output runs/overlap
 ```
 
-MNIST 会下载到 `data/`。训练参数集中在 JSON 配置中。`runs/selection/model.pt` 保存验证 L1 最优的指数移动平均权重，`last.pt` 保存完整的断点续训状态。
+MNIST 会下载到 `data/`。训练参数集中在 JSON 配置中。`runs/overlap/model.pt` 保存验证 L1 最优的指数移动平均权重，`last.pt` 保存完整的断点续训状态。
 
 ```powershell
-python -m denoise.train --config configs/overlap.json --output runs/selection --resume runs/selection/last.pt
-python -m denoise.evaluate --checkpoint runs/selection/model.pt --split validation --seed 12345 --ensemble --project-output --output outputs/validation
+python -m denoise.train --config configs/overlap.json --output runs/overlap --resume runs/overlap/last.pt
+python -m denoise.evaluate --checkpoint runs/overlap/model.pt --split validation --seed 12345 --ensemble --project-output --mean-consistency --output outputs/validation
 ```
 
-固定最终训练预算后，使用 `--full` 在全部 60,000 张训练图像上训练。完整训练模型不再具有独立验证集；`evaluate` 会拒绝对其运行验证集评估。
+固定最终训练预算后，使用 `--full` 在全部 60,000 张训练图像上优化。`--initialize` 读取本项目模型选择阶段得到的权重，以较低学习率继续训练；也可以省略该参数从头训练。完整训练模型不再具有独立验证集；`evaluate` 会拒绝对其运行验证集评估。
 
 ```powershell
-python -m denoise.train --config configs/overlap.json --output runs/full --full
-python -m denoise.evaluate --checkpoint runs/full/model.pt --ensemble --project-output --output outputs/test
+python -m denoise.train --config configs/final.json --output runs/final --full --initialize runs/overlap/model.pt
+python -m denoise.evaluate --checkpoint runs/final/model.pt --ensemble --project-output --mean-consistency --output outputs/test
 ```
 
 ## 评估
@@ -42,7 +42,7 @@ python -m denoise.evaluate --checkpoint runs/full/model.pt --ensemble --project-
 测试集按原始顺序评估；每类的第一个样本由标签索引自动确定。噪声在分批推理之前统一生成，因此不随推理批大小改变。训练、验证和测试的随机种子互相独立。
 
 ```powershell
-python -m denoise.evaluate --checkpoint runs/full/model.pt --ensemble --project-output --external examples/image.png --output outputs/example
+python -m denoise.evaluate --checkpoint runs/final/model.pt --ensemble --project-output --mean-consistency --external examples/image.png --output outputs/example
 python -m denoise.audit outputs/example
 ```
 
@@ -50,13 +50,17 @@ python -m denoise.audit outputs/example
 
 默认基线为加噪输入及固定参数的 `3 × 3` 高斯平滑。自集成需要八次前向计算，是否启用应依据验证集决定。MNIST 是手写数字分布，在自然图像上的效果需要单独检验。
 
+`--mean-consistency` 将最终图像均值限制在含噪均值的五倍标准误区间内，并保留 `[0, 1]` 范围。该约束由已知噪声方差确定，只在重建出现较大整体亮度偏移时触发，不使用干净参考图像。原始、自集成、范围投影和均值约束的指标分别输出；该约束不保证对任意输入降低 L1。
+
+`configs/nonoverlap.json` 与 `configs/context.json` 分别提供非重叠及更大邻域的结构对照；正式训练采用 `configs/overlap.json` 和 `configs/final.json`。
+
 ## CPU 运行
 
 `--device auto` 自动选择可用计算后端。`--device cpu` 可强制使用 CPU，无需修改程序；CPU 使用完整精度，关闭混合精度与梯度缩放。CPU 配置采用较小的批大小，网络结构保持一致。
 
 ```powershell
 python -m denoise.train --config configs/cpu.json --device cpu --output runs/cpu
-python -m denoise.evaluate --checkpoint runs/full/model.pt --device cpu --batch-size 16 --ensemble --project-output --output outputs/cpu
+python -m denoise.evaluate --checkpoint runs/final/model.pt --device cpu --batch-size 16 --ensemble --project-output --mean-consistency --output outputs/cpu
 ```
 
 训练配置、随机噪声和优化更新会影响结果。CPU 配置是独立的训练方案，不能将其未经完整训练的输出视为其他配置的复现结果。

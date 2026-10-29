@@ -15,26 +15,26 @@ A PyTorch experiment for grayscale image denoising. The model is trained from sc
 
 ## Installation and training
 
-Python 3.10 or later is required. Install a device-compatible PyTorch build following the [official instructions](https://pytorch.org/get-started/locally/), then install the remaining dependencies.
+Python 3.11 or later is required. Install a device-compatible PyTorch build following the [official instructions](https://pytorch.org/get-started/locally/), then install the remaining dependencies.
 
 ```powershell
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
-python -m denoise.train --config configs/overlap.json --output runs/selection
+python -m denoise.train --config configs/overlap.json --output runs/overlap
 ```
 
-MNIST is downloaded to `data/`. JSON files define the experiment parameters. `runs/selection/model.pt` contains the exponential-moving-average weights with the lowest validation L1; `last.pt` contains the complete state for resuming training.
+MNIST is downloaded to `data/`. JSON files define the experiment parameters. `runs/overlap/model.pt` contains the exponential-moving-average weights with the lowest validation L1; `last.pt` contains the complete state for resuming training.
 
 ```powershell
-python -m denoise.train --config configs/overlap.json --output runs/selection --resume runs/selection/last.pt
-python -m denoise.evaluate --checkpoint runs/selection/model.pt --split validation --seed 12345 --ensemble --project-output --output outputs/validation
+python -m denoise.train --config configs/overlap.json --output runs/overlap --resume runs/overlap/last.pt
+python -m denoise.evaluate --checkpoint runs/overlap/model.pt --split validation --seed 12345 --ensemble --project-output --mean-consistency --output outputs/validation
 ```
 
-Once the final training budget is fixed, use `--full` to train on all 60,000 training images. A full-data model no longer has an independent validation set; the evaluator rejects validation evaluation for such a checkpoint.
+Once the final training budget is fixed, use `--full` to optimize on all 60,000 training images. `--initialize` loads weights obtained during this project's selection phase for refinement at a lower learning rate; omit it to train from scratch. A full-data model no longer has an independent validation set; the evaluator rejects validation evaluation for such a checkpoint.
 
 ```powershell
-python -m denoise.train --config configs/overlap.json --output runs/full --full
-python -m denoise.evaluate --checkpoint runs/full/model.pt --ensemble --project-output --output outputs/test
+python -m denoise.train --config configs/final.json --output runs/final --full --initialize runs/overlap/model.pt
+python -m denoise.evaluate --checkpoint runs/final/model.pt --ensemble --project-output --mean-consistency --output outputs/test
 ```
 
 ## Evaluation
@@ -42,7 +42,7 @@ python -m denoise.evaluate --checkpoint runs/full/model.pt --ensemble --project-
 The test set is evaluated in its original order. The first sample of each digit is selected by its label index. Noise is generated before batched inference and is independent of inference batch size. Training, validation, and test seeds are separate.
 
 ```powershell
-python -m denoise.evaluate --checkpoint runs/full/model.pt --ensemble --project-output --external examples/image.png --output outputs/example
+python -m denoise.evaluate --checkpoint runs/final/model.pt --ensemble --project-output --mean-consistency --external examples/image.png --output outputs/example
 python -m denoise.audit outputs/example
 ```
 
@@ -50,13 +50,17 @@ python -m denoise.audit outputs/example
 
 Baselines are the noisy input and a fixed `3 × 3` Gaussian smoother. Self-ensembling requires eight forward passes and should be selected using validation data. MNIST represents handwritten digits; performance on natural images must be assessed separately.
 
+`--mean-consistency` constrains the final image mean to within five standard errors of the noisy observation mean while preserving `[0, 1]` bounds. The known noise variance defines this constraint. It activates only for substantial mean shifts and does not use the clean reference. Raw, self-ensembled, range-projected, and mean-constrained metrics are exported separately; the constraint does not guarantee a lower L1 for arbitrary inputs.
+
+`configs/nonoverlap.json` and `configs/context.json` provide non-overlapping and larger-neighborhood architecture comparisons. The main recipe uses `configs/overlap.json` followed by `configs/final.json`.
+
 ## CPU execution
 
 `--device auto` selects an available compute backend. `--device cpu` forces CPU execution without code changes. CPU execution uses full precision and disables mixed precision and gradient scaling. The CPU configuration reduces batch size while keeping the architecture unchanged.
 
 ```powershell
 python -m denoise.train --config configs/cpu.json --device cpu --output runs/cpu
-python -m denoise.evaluate --checkpoint runs/full/model.pt --device cpu --batch-size 16 --ensemble --project-output --output outputs/cpu
+python -m denoise.evaluate --checkpoint runs/final/model.pt --device cpu --batch-size 16 --ensemble --project-output --mean-consistency --output outputs/cpu
 ```
 
 Configuration, random noise, and optimization updates affect results. The CPU configuration is a separate training recipe; a partial CPU run does not reproduce a fully trained experiment from another configuration.

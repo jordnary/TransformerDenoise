@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 from torch.nn import functional as F
 
-from .common import add_noise, dataset, fixed_noise, read_json, resolve_device, save_checkpoint, setup, split_indices, write_json
+from .common import add_noise, dataset, fixed_noise, read_json, resolve_device, save_checkpoint, setup, sha256, split_indices, write_json
 from .model import Denoiser
 
 
@@ -27,7 +27,7 @@ def validate(model, images, noise, batch_size, device):
     return dict(zip(("l1", "mse", "psnr"), (errors / len(images)).tolist()))
 
 
-def run(config, output, full=False, resume=None, device_name="auto"):
+def run(config, output, full=False, resume=None, device_name="auto", initialize=None):
     cfg = read_json(config)
     setup(cfg["seed"])
     device = resolve_device(device_name)
@@ -42,6 +42,15 @@ def run(config, output, full=False, resume=None, device_name="auto"):
     noise = None if full else fixed_noise(validation.shape, cfg["validation_noise_seed"])
     images = images.to(device)
     model = Denoiser(**cfg["model"]).to(device)
+    initialization = None
+    if initialize:
+        if resume or not full:
+            raise ValueError("Initialization requires a new full-data run")
+        selected = torch.load(initialize, map_location=device, weights_only=True)
+        if selected["config"]["model"] != cfg["model"]:
+            raise ValueError("Initialization architecture mismatch")
+        model.load_state_dict(selected["model"])
+        initialization = sha256(initialize)
     ema = copy.deepcopy(model).eval().requires_grad_(False)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     amp = device.type == "cuda" and cfg["amp"]
@@ -57,8 +66,9 @@ def run(config, output, full=False, resume=None, device_name="auto"):
         optimizer.load_state_dict(state["optimizer"])
         scaler.load_state_dict(state["scaler"])
         history, best, start_epoch, step = state["history"], state["best"], state["epoch"], state["step"]
+        initialization = state.get("initialization_sha256")
     write_json(output / "config.json", cfg)
-    write_json(output / "protocol.json", {"full": full, "train_count": len(images), "validation_count": 0 if full else len(validation), "parameters": sum(p.numel() for p in model.parameters()), "selection": "fixed final epoch" if full else "minimum fixed-noise validation L1", "train_indices": None if full else train_ids.tolist(), "validation_indices": None if full else val_ids.tolist()})
+    write_json(output / "protocol.json", {"full": full, "train_count": len(images), "validation_count": 0 if full else len(validation), "parameters": sum(p.numel() for p in model.parameters()), "initialization_sha256": initialization, "selection": "fixed final epoch" if full else "minimum fixed-noise validation L1", "train_indices": None if full else train_ids.tolist(), "validation_indices": None if full else val_ids.tolist()})
     batches = math.ceil(len(images) / cfg["batch_size"])
     total_steps, warmup = cfg["epochs"] * batches, cfg["warmup_epochs"] * batches
     for epoch in range(start_epoch, cfg["epochs"]):
@@ -101,7 +111,7 @@ def run(config, output, full=False, resume=None, device_name="auto"):
         history.append(row)
         improved = full or row["val_l1"] < best
         best = best if full else min(best, row["val_l1"])
-        payload = {"config": cfg, "model": ema.state_dict(), "epoch": epoch + 1, "full": full}
+        payload = {"config": cfg, "model": ema.state_dict(), "epoch": epoch + 1, "full": full, "initialization_sha256": initialization}
         if improved:
             save_checkpoint(output / "model.pt", payload)
         save_checkpoint(output / "last.pt", {**payload, "model": model.state_dict(), "ema": ema.state_dict(), "optimizer": optimizer.state_dict(), "scaler": scaler.state_dict(), "history": history, "best": best, "step": step})
@@ -112,10 +122,11 @@ def run(config, output, full=False, resume=None, device_name="auto"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/train.json")
+    parser.add_argument("--config", default="configs/overlap.json")
     parser.add_argument("--output", default="runs/selection")
     parser.add_argument("--full", action="store_true", help="Use all training images, with a fixed epoch budget")
     parser.add_argument("--resume", help="Trusted local training checkpoint")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--initialize", help="Checkpoint from this project's selection phase, for full-data refinement")
     args = parser.parse_args()
-    run(args.config, args.output, args.full, args.resume, args.device)
+    run(args.config, args.output, args.full, args.resume, args.device, args.initialize)

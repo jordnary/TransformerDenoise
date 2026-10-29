@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from denoise.common import SIGMA, add_noise, first_indices, fixed_noise, predict, read_json, resolve_device, scores, split_indices, write_json
+from denoise.common import SIGMA, add_noise, first_indices, fixed_noise, mean_consistent, predict, read_json, resolve_device, save_checkpoint, scores, split_indices, write_json
 from denoise.model import Denoiser, partition, reverse, shift_mask
 from denoise.evaluate import gaussian_baseline
 from denoise.train import run
@@ -89,6 +89,15 @@ class Contracts(unittest.TestCase):
         labels = torch.tensor([7, 2, 1, 0, 4, 1, 4, 9, 5, 9, 0, 6, 9, 0, 1, 5, 9, 7, 3, 4, 9, 6, 6, 5, 4, 0, 7, 4, 0, 1, 3, 1, 3, 4, 7, 2, 7, 1, 2, 1, 1, 7, 4, 2, 3, 5, 1, 2, 4, 4, 6, 3, 5, 5, 6, 0, 4, 1, 9, 5, 7, 8])
         self.assertEqual(first_indices(labels).tolist(), [3, 2, 1, 18, 4, 8, 11, 0, 61, 7])
 
+    def test_mean_constraint_projection(self):
+        clean = torch.full((2, 1, 32, 32), 0.4)
+        pred = torch.zeros_like(clean)
+        adjusted = mean_consistent(pred, clean)
+        self.assertAlmostEqual(float(adjusted.mean()), 0.4 - 5 * SIGMA / 32, places=6)
+        self.assertTrue(torch.all(scores(adjusted, clean)["mse"] < scores(pred, clean)["mse"]))
+        torch.testing.assert_close(mean_consistent(clean, clean), clean, rtol=0, atol=0)
+        torch.testing.assert_close(mean_consistent(adjusted, clean), adjusted, atol=1e-6, rtol=0)
+
     def test_ensemble_inverse_and_batch_independence(self):
         torch.manual_seed(8)
         model = Denoiser(dim=16, depth=2, heads=2).eval()
@@ -112,13 +121,23 @@ class Contracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch("denoise.train.dataset", return_value=(images, None)):
             root = Path(directory)
             write_json(root / "config.json", cfg)
-            history = run(root / "config.json", root / "selection", device_name="cpu")
+            def capture(path, value):
+                save_checkpoint(path, value)
+                if Path(path).name == "last.pt" and value["epoch"] == 1:
+                    save_checkpoint(root / "epoch1.pt", value)
+            with patch("denoise.train.save_checkpoint", side_effect=capture):
+                history = run(root / "config.json", root / "selection", device_name="cpu")
             self.assertEqual(len(history), 2)
             saved = torch.load(root / "selection/model.pt", map_location="cpu", weights_only=True)
             self.assertFalse(saved["full"])
-            restored = run(root / "config.json", root / "selection", resume=root / "selection/last.pt", device_name="cpu")
-            self.assertEqual(history, restored)
-            full = run(root / "config.json", root / "full", full=True, device_name="cpu")
+            expected = torch.load(root / "selection/last.pt", map_location="cpu", weights_only=False)["model"]
+            restored = run(root / "config.json", root / "selection", resume=root / "epoch1.pt", device_name="cpu")
+            for key in ("train_l1", "val_l1", "val_mse", "val_psnr"):
+                self.assertEqual(history[-1][key], restored[-1][key])
+            actual = torch.load(root / "selection/last.pt", map_location="cpu", weights_only=False)["model"]
+            for key in expected:
+                torch.testing.assert_close(expected[key], actual[key], rtol=0, atol=0)
+            full = run(root / "config.json", root / "full", full=True, device_name="cpu", initialize=root / "selection/model.pt")
             self.assertNotIn("val_l1", full[-1])
 
 

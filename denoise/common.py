@@ -86,6 +86,27 @@ def first_indices(labels):
     return torch.tensor([int(torch.where(labels == digit)[0][0]) for digit in range(10)])
 
 
+def mean_consistent(prediction, noisy):
+    """Project onto the box and a five-standard-error observation-mean slab."""
+    prediction = prediction.clamp(0, 1)
+    dims = (-3, -2, -1)
+    radius = 5 * SIGMA / noisy[0].numel() ** 0.5
+    observed = noisy.mean(dims, keepdim=True)
+    lower, upper = (observed - radius).clamp(0, 1), (observed + radius).clamp(0, 1)
+    mean = prediction.mean(dims, keepdim=True)
+    target = mean.clamp(min=lower, max=upper)
+    active = (mean < lower) | (mean > upper)
+    if not active.any():
+        return prediction
+    left, right = torch.full_like(mean, -1), torch.ones_like(mean)
+    for _ in range(24):
+        shift = (left + right) / 2
+        below = (prediction + shift).clamp(0, 1).mean(dims, keepdim=True) < target
+        left, right = torch.where(below, shift, left), torch.where(below, right, shift)
+    adjusted = (prediction + (left + right) / 2).clamp(0, 1)
+    return torch.where(active, adjusted, prediction)
+
+
 @torch.inference_mode()
 def predict(model, noisy, ensemble=False):
     if not ensemble:
