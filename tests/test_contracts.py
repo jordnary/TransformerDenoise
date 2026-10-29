@@ -21,6 +21,10 @@ class Contracts(unittest.TestCase):
     def setUpClass(cls):
         torch.set_num_threads(2)
 
+    def test_assignment_implementation_budget(self):
+        modules = list(Path("denoise").glob("*.py"))
+        self.assertLessEqual(sum(len(path.read_text(encoding="utf-8").splitlines()) for path in modules), 800)
+
     def test_sizes_and_no_convolution(self):
         model = Denoiser(dim=16, depth=2, heads=2)
         conv_types = (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d)

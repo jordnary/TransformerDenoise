@@ -48,6 +48,18 @@ Noise is generated before batched inference and does not depend on batch size. O
 
 Baselines include the noisy input and a fixed `3 × 3` Gaussian smoother. `--ensemble` enables eight-transform self-ensembling, requiring eight forward passes. MNIST and natural textures differ in distribution; intensity augmentation does not establish reliable generalization to all natural images.
 
+## Structure augmentation and overlapping refinement
+
+An additional controlled experiment compares continued training, MNIST structure augmentation, and structure augmentation with an overlapping refinement branch. Clean affine crops and convex mixtures use only MNIST images within the current split; fresh fixed-strength Gaussian noise is added afterwards. Mixed-size training covers `28 × 28` and `32 × 32`. The optional branch combines shallow and deep features, predicts overlapping residual patches through a linear layer, and normalizes their sums by coverage counts. It uses no convolution.
+
+```powershell
+python -m denoise.experiment --external assignment/test.png
+```
+
+Complete the base and intensity-augmentation stages above first. The experiment selects by a preregistered three-domain validation L1 criterion with a maximum 0.20 dB digit-validation PSNR loss, then trains on all 60,000 images for eight fixed epochs before reading the external test image. Outputs include validation comparisons, the selection decision, paired old/new evaluations across three fixed noise seeds, and a five-panel image comparison. All Python modules in `denoise`, including this driver, remain within 800 lines; tests enforce the limit. Existing model artifacts and defaults are preserved.
+
+See the [experiment plan](docs/experiment_plan.md) for the fixed protocol. Repeating the command resumes training stages; retain their configurations and initialization checkpoints.
+
 ## CPU fallback
 
 `--device auto` selects an available backend; `--device cpu` forces CPU execution. CPU uses full precision without gradient scaling and supports training, checkpoint resumption, and inference from the same checkpoint.
