@@ -1,6 +1,9 @@
 {
   "seed": 2026,
+  "split_seed": 3407,
+  "validation_noise_seed": 12345,
   "data_root": "data",
+  "validation_size": 5000,
   "model": {"dim": 64, "depth": 8, "heads": 4, "patch": 2, "window": 4, "halo": 2},
   "epochs": 40,
   "batch_size": 32,
@@ -11,5 +14,6 @@
   "weight_decay": 0.0001,
   "grad_clip": 1.0,
   "ema_decay": 0.995,
-  "amp": false
+  "amp": false,
+  "augment": true
 }

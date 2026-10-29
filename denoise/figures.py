@@ -59,10 +59,12 @@ def learning_curve(history_path, output):
     history = read_json(history_path)
     epochs = [row["epoch"] for row in history]
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.7))
-    axes[0].plot(epochs, [row["train_l1"] for row in history], color="#167d9a")
-    axes[0].set(xlabel="Epoch", ylabel="Training L1 loss")
-    axes[1].plot(epochs, [row["lr"] for row in history], color="#b65a28")
-    axes[1].set(xlabel="Epoch", ylabel="Learning rate")
+    axes[0].plot(epochs, [row["train_l1"] for row in history], label="Training")
+    axes[0].plot(epochs, [row["val_l1"] for row in history], label="Validation (EMA)")
+    axes[0].set(xlabel="Epoch", ylabel="L1 loss")
+    axes[0].legend(frameon=False)
+    axes[1].plot(epochs, [row["val_psnr"] for row in history], color="#167d9a")
+    axes[1].set(xlabel="Epoch", ylabel="Validation PSNR (dB)")
     for ax in axes:
         ax.grid(alpha=0.2)
     fig.tight_layout()

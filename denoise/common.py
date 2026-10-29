@@ -10,8 +10,6 @@ import torch
 from torchvision.datasets import MNIST
 
 SIGMA = 50 / 255
-TARGET_POLICY = "original_uint8_div_255"
-MODEL_VERSION = "centered_window_transformer_v1"
 
 
 def resolve_device(requested="auto"):
@@ -56,19 +54,21 @@ def dataset(root, train):
     return ds.data[:, None], ds.targets
 
 
-def clean_batch(images, indices):
-    if images.dtype != torch.uint8:
-        raise ValueError("Training targets must come from the original uint8 images")
-    return images[indices].float() / 255
-
-
-def check_checkpoint(checkpoint):
-    if checkpoint.get("target_policy") != TARGET_POLICY or checkpoint.get("model_version") != MODEL_VERSION:
-        raise ValueError("Checkpoint does not match the original-target training protocol")
+def split_indices(size, validation_size, seed):
+    order = torch.randperm(size, generator=torch.Generator().manual_seed(seed))
+    return order[validation_size:], order[:validation_size]
 
 
 def add_noise(clean, generator=None):
     return clean + SIGMA * torch.randn(clean.shape, device=clean.device, generator=generator)
+
+
+def tone_augment(clean, probability, generator):
+    draws = torch.rand((4, len(clean), 1, 1, 1), device=clean.device, generator=generator)
+    contrast = 0.25 + 0.75 * draws[0]
+    base = torch.where(draws[1] < 0.5, 1 - clean, clean)
+    transformed = contrast * base + (1 - contrast) * draws[2]
+    return torch.where(draws[3] < probability, transformed, clean)
 
 
 def fixed_noise(shape, seed):
@@ -95,8 +95,16 @@ def first_indices(labels):
 
 
 @torch.inference_mode()
-def predict(model, noisy):
-    return model(noisy).float()
+def predict(model, noisy, ensemble=False):
+    if not ensemble:
+        return model(noisy).float()
+    total = torch.zeros_like(noisy)
+    for flip in (False, True):
+        for k in range(4):
+            z = noisy.flip(-1) if flip else noisy
+            y = model(z.rot90(k, (-2, -1))).float().rot90(-k, (-2, -1))
+            total += y.flip(-1) if flip else y
+    return total / 8
 
 
 def sha256(path):

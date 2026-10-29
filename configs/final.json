@@ -1,0 +1,19 @@
+{
+  "seed": 2027,
+  "split_seed": 3407,
+  "validation_noise_seed": 12345,
+  "data_root": "data",
+  "validation_size": 5000,
+  "model": {"dim": 64, "depth": 8, "heads": 4, "patch": 2, "window": 4, "halo": 2},
+  "epochs": 20,
+  "batch_size": 256,
+  "eval_batch_size": 256,
+  "lr": 0.0001,
+  "min_lr_ratio": 0.1,
+  "warmup_epochs": 1,
+  "weight_decay": 0.0001,
+  "grad_clip": 1.0,
+  "ema_decay": 0.995,
+  "amp": true,
+  "augment": true
+}
