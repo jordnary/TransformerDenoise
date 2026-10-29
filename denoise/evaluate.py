@@ -9,7 +9,7 @@ from PIL import Image
 import torch
 from torch.nn import functional as F
 
-from .common import dataset, first_indices, fixed_noise, predict, scores, setup, sha256, split_indices, summarize, write_json
+from .common import dataset, first_indices, fixed_noise, predict, resolve_device, scores, setup, sha256, split_indices, summarize, write_json
 from .model import Denoiser
 
 
@@ -35,6 +35,9 @@ def evaluate(model, clean, noise, batch, device, ensemble):
         for name, value in values.items():
             predictions[name].append(value.cpu())
     predictions = {name: torch.cat(parts) for name, parts in predictions.items()}
+    for name in ("single", "ensemble"):
+        if name in predictions:
+            predictions[name + "_projected"] = predictions[name].clamp(0, 1)
     return predictions, {name: scores(value, clean) for name, value in predictions.items()}
 
 
@@ -42,7 +45,7 @@ def run(args):
     setup(2026)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     cfg = checkpoint["config"]
     model = Denoiser(**cfg["model"]).to(device).eval()
@@ -58,10 +61,10 @@ def run(args):
     noise = fixed_noise(clean.shape, args.seed)
     predictions, metrics = evaluate(model, clean, noise, args.batch_size, device, args.ensemble)
     selected = first_indices(labels)
-    method = "ensemble" if args.ensemble else "single"
+    method = ("ensemble" if args.ensemble else "single") + ("_projected" if args.project_output else "")
     result = {"split": args.split, "count": len(clean), "noise_seed": args.seed, "sigma": 50 / 255,
               "checkpoint_sha256": sha256(args.checkpoint), "epoch": checkpoint["epoch"], "full_training": checkpoint["full"],
-              "primary_method": method, "output_clipped": False, "metrics": {name: summarize(value) for name, value in metrics.items()},
+              "primary_method": method, "output_clipped": args.project_output, "metrics": {name: summarize(value) for name, value in metrics.items()},
               "first_per_digit": [{"digit": digit, "index": int(indices[i]), **{name: {key: float(v[i]) for key, v in values.items()} for name, values in metrics.items()}} for digit, i in enumerate(selected)]}
     with (output / "per_image.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -103,6 +106,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=20261029)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--ensemble", action="store_true")
+    parser.add_argument("--project-output", action="store_true", help="Project only the final reconstruction to [0, 1]")
     parser.add_argument("--external")
     parser.add_argument("--external-seed", type=int, default=424242)
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     run(parser.parse_args())

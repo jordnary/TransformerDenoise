@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 from torch.nn import functional as F
 
-from .common import add_noise, dataset, fixed_noise, read_json, setup, split_indices, write_json
+from .common import add_noise, dataset, fixed_noise, read_json, resolve_device, save_checkpoint, setup, split_indices, write_json
 from .model import Denoiser
 
 
@@ -27,10 +27,10 @@ def validate(model, images, noise, batch_size, device):
     return dict(zip(("l1", "mse", "psnr"), (errors / len(images)).tolist()))
 
 
-def run(config, output, full=False, resume=None):
+def run(config, output, full=False, resume=None, device_name="auto"):
     cfg = read_json(config)
     setup(cfg["seed"])
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(device_name)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     if (output / "last.pt").exists() and resume is None:
@@ -45,7 +45,7 @@ def run(config, output, full=False, resume=None):
     ema = copy.deepcopy(model).eval().requires_grad_(False)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     amp = device.type == "cuda" and cfg["amp"]
-    amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    amp_dtype = torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else torch.float16
     scaler = torch.amp.GradScaler(device.type, enabled=amp and amp_dtype == torch.float16)
     history, best, start_epoch, step = [], float("inf"), 0, 0
     if resume:
@@ -91,7 +91,8 @@ def run(config, output, full=False, resume=None):
             scaler.update()
             decay = min(cfg["ema_decay"], (1 + step) / (10 + step))
             with torch.no_grad():
-                torch._foreach_lerp_(list(ema.parameters()), list(model.parameters()), 1 - decay)
+                for average, parameter in zip(ema.parameters(), model.parameters()):
+                    average.lerp_(parameter, 1 - decay)
             total_loss += float(loss.detach()) * len(ids)
         row = {"epoch": epoch + 1, "train_l1": total_loss / len(images), "lr": optimizer.param_groups[0]["lr"]}
         if not full:
@@ -102,8 +103,8 @@ def run(config, output, full=False, resume=None):
         best = best if full else min(best, row["val_l1"])
         payload = {"config": cfg, "model": ema.state_dict(), "epoch": epoch + 1, "full": full}
         if improved:
-            torch.save(payload, output / "model.pt")
-        torch.save({**payload, "model": model.state_dict(), "ema": ema.state_dict(), "optimizer": optimizer.state_dict(), "scaler": scaler.state_dict(), "history": history, "best": best, "step": step}, output / "last.pt")
+            save_checkpoint(output / "model.pt", payload)
+        save_checkpoint(output / "last.pt", {**payload, "model": model.state_dict(), "ema": ema.state_dict(), "optimizer": optimizer.state_dict(), "scaler": scaler.state_dict(), "history": history, "best": best, "step": step})
         write_json(output / "history.json", history)
         print(" ".join(f"{k}={v:.6f}" if isinstance(v, float) else f"{k}={v}" for k, v in row.items()), flush=True)
     return history
@@ -115,5 +116,6 @@ if __name__ == "__main__":
     parser.add_argument("--output", default="runs/selection")
     parser.add_argument("--full", action="store_true", help="Use all training images, with a fixed epoch budget")
     parser.add_argument("--resume", help="Trusted local training checkpoint")
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     args = parser.parse_args()
-    run(args.config, args.output, args.full, args.resume)
+    run(args.config, args.output, args.full, args.resume, args.device)

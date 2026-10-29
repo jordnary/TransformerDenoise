@@ -1,15 +1,19 @@
 """Numerical and structural contracts for the denoising experiment."""
 
 import unittest
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-from denoise.common import SIGMA, add_noise, first_indices, fixed_noise, predict, scores, split_indices
+from denoise.common import SIGMA, add_noise, first_indices, fixed_noise, predict, read_json, resolve_device, scores, split_indices, write_json
 from denoise.model import Denoiser, partition, reverse, shift_mask
 from denoise.evaluate import gaussian_baseline
+from denoise.train import run
 
 
 class Contracts(unittest.TestCase):
@@ -72,6 +76,10 @@ class Contracts(unittest.TestCase):
         torch.testing.assert_close(result["psnr"], torch.full((2,), 20.0, dtype=torch.float64))
         self.assertAlmostEqual(float(result["l1"].mean()), 0.1, places=6)
         self.assertTrue(torch.isinf(scores(clean, clean)["psnr"]).all())
+        clean = torch.rand(5, 1, 28, 28)
+        pred = clean + torch.randn_like(clean)
+        self.assertTrue(torch.all(scores(pred.clamp(0, 1), clean)["l1"] <= scores(pred, clean)["l1"]))
+        self.assertTrue(torch.all(scores(pred.clamp(0, 1), clean)["mse"] <= scores(pred, clean)["mse"]))
 
     def test_disjoint_split_and_first_occurrence(self):
         train, validation = split_indices(60000, 5000, 3407)
@@ -91,6 +99,27 @@ class Contracts(unittest.TestCase):
         parts = torch.cat([predict(model, part, True) for part in x.split(1)])
         torch.testing.assert_close(full, parts, atol=2e-6, rtol=2e-6)
         torch.testing.assert_close(gaussian_baseline(torch.ones_like(x)), torch.ones_like(x))
+
+    def test_cpu_fallback_and_training_checkpoint(self):
+        with patch("torch.cuda.is_available", return_value=False):
+            self.assertEqual(resolve_device("auto"), torch.device("cpu"))
+            with self.assertRaises(RuntimeError):
+                resolve_device("cuda")
+        cfg = read_json("configs/overlap.json")
+        cfg.update(epochs=2, validation_size=4, batch_size=4, eval_batch_size=4)
+        cfg["model"].update(dim=16, depth=2, heads=2)
+        images = torch.randint(0, 256, (16, 1, 28, 28), dtype=torch.uint8)
+        with tempfile.TemporaryDirectory() as directory, patch("denoise.train.dataset", return_value=(images, None)):
+            root = Path(directory)
+            write_json(root / "config.json", cfg)
+            history = run(root / "config.json", root / "selection", device_name="cpu")
+            self.assertEqual(len(history), 2)
+            saved = torch.load(root / "selection/model.pt", map_location="cpu", weights_only=True)
+            self.assertFalse(saved["full"])
+            restored = run(root / "config.json", root / "selection", resume=root / "selection/last.pt", device_name="cpu")
+            self.assertEqual(history, restored)
+            full = run(root / "config.json", root / "full", full=True, device_name="cpu")
+            self.assertNotIn("val_l1", full[-1])
 
 
 if __name__ == "__main__":

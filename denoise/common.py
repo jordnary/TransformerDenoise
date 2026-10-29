@@ -12,6 +12,14 @@ from torchvision.datasets import MNIST
 SIGMA = 50 / 255
 
 
+def resolve_device(requested="auto"):
+    if requested not in ("auto", "cpu", "cuda"):
+        raise ValueError("Device must be auto, cpu, or cuda")
+    if requested == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA is unavailable; use --device cpu or --device auto")
+    return torch.device("cuda" if requested == "auto" and torch.cuda.is_available() else "cpu" if requested == "auto" else requested)
+
+
 def setup(seed, threads=4):
     random.seed(seed)
     np.random.seed(seed)
@@ -29,7 +37,16 @@ def read_json(path):
 def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def save_checkpoint(path, value):
+    path = Path(path)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    torch.save(value, temporary)
+    temporary.replace(path)
 
 
 def dataset(root, train):
