@@ -1,0 +1,39 @@
+# Local assignment materials and submission documents
+/作业5说明.png
+/test.png
+/assignment/
+/reports/
+/submission/
+# Downloaded data, experiment artifacts, and model weights
+/data/
+/runs/
+/outputs/
+*.pt
+*.pth
+*.ckpt
+*.npz
+*.npy
+# Python and editor caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+.idea/
+.vscode/
+# Credentials, local records, and private configuration
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.db
+*.sqlite*
+*.log
+AGENTS.md
+Thumbs.db
+.DS_Store
