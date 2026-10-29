@@ -1,8 +1,12 @@
-# Local assignment materials and submission documents
-/作业5说明.png
+# Local materials: keep only empty directory placeholders in Git
+/assignment/*
+!/assignment/.gitkeep
+/reports/*
+!/reports/.gitkeep
+/personal/*
+!/personal/.gitkeep
+# Legacy local locations remain ignored
 /test.png
-/assignment/
-/reports/
 /submission/
 /archive/
 # Downloaded data, experiment artifacts, and model weights
@@ -19,7 +23,12 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 *.egg-info/
+.coverage
+htmlcov/
+build/
+dist/
 .venv/
 venv/
 .idea/
@@ -27,6 +36,8 @@ venv/
 # Credentials, local records, and private configuration
 .env
 .env.*
+*.local
+*.local.*
 *.pem
 *.key
 *.pfx

@@ -39,10 +39,10 @@ python -m denoise.evaluate --checkpoint runs/robust/model.pt --split validation 
 ```powershell
 python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --project-output --output outputs/test
 python -m denoise.audit outputs/test
-python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --project-output --external examples/image.png --output outputs/example
+python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --project-output --external personal/image.png --output outputs/example
 ```
 
-`examples/image.png` 表示自行提供的图片。外部图片转换为灰度但不缩放；评估程序只读取图片，不更新权重。默认评估官方 10,000 张 MNIST 测试图像，数字样例固定取原始顺序中每类第一个样本。`--split train-first` 单独评估训练集各类首样本，输出明确标记为训练数据。
+`personal/image.png` 表示自行提供的本地图片，不随仓库分发。外部图片转换为灰度但不缩放；评估程序只读取图片，不更新权重。默认评估官方 10,000 张 MNIST 测试图像，数字样例固定取原始顺序中每类第一个样本。`--split train-first` 单独评估训练集各类首样本，输出明确标记为训练数据。
 
 噪声在分批推理之前统一生成，不依赖推理批大小。输出包括逐图 CSV、汇总 JSON、浮点 NPZ 与对比图。`--project-output` 只约束重建结果，原始输出指标仍被保留。图片采用固定的 `[0, 1]` 显示范围，显示不会修改指标数组。
 
@@ -53,14 +53,12 @@ python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --project-out
 新增实验保留既有模型与默认入口，比较继续训练、MNIST 结构增强、结构增强加重叠修正分支。结构增强只从当前划分内的 MNIST 干净图像生成仿射裁块与凸组合；随后再加固定强度高斯噪声。混合尺寸训练覆盖 `28 × 28` 和 `32 × 32`。新增重建分支融合浅层与深层特征，以线性映射预测重叠残差块，并按覆盖次数归一化；不使用卷积。
 
 ```powershell
-python -m denoise.experiment --external assignment/test.png
+python -m denoise.experiment --external personal/image.png
 ```
 
-需要先完成前述基础及灰度增强训练。实验按预先固定的三域验证 L1 选择方案，同时约束数字验证 PSNR 的下降不超过 0.20 dB；选定后使用全部 60,000 张图像固定训练 8 轮，最后才读取外部测试图。输出包含三组验证记录、选择依据、新旧模型在三个固定噪声种子下的指标及五列对比图。原始实现和实验驱动的 `denoise` Python 模块总计不超过 800 行，测试检查该约束。
+需要先完成前述基础及灰度增强训练。实验按预先固定的三域验证 L1 选择方案，同时约束数字验证 PSNR 的下降不超过 0.20 dB；选定后使用全部 60,000 张图像固定训练 8 轮，最后才读取外部测试图。输出包含三组验证记录、选择依据、新旧模型在三个固定噪声种子下的指标及五列对比图。
 
-具体配置及数据使用边界见[实验计划](docs/experiment_plan.md)。重新执行相同命令会恢复各阶段训练断点，复用时应保留对应配置和初始化权重。
-
-本轮[实验结果](docs/experiment_results.md)未显示外部测试图有实质改善：验证选定方案的三噪声平均 PSNR 略降，结构增强及重叠修正的事后诊断增益约 0.03 dB，仍低于高斯平滑基线。保留原模型作为默认，新增权重仅作为实验候选。
+对照配置位于 `configs/experiment_*.json`，生成结果写入 `outputs/experiment/`，检查点写入 `runs/experiment/`。重新执行相同命令会恢复各阶段训练断点，复用时应保留对应配置和初始化权重。个人实验计划、报告与指标汇总保存在本地 `reports/experiments/`，不随仓库分发。
 
 ## CPU 备选
 
@@ -73,9 +71,12 @@ python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --device cpu 
 
 CPU 配置采用较小批大小，提供结构相同的独立训练方案。执行完整三阶段方案时，可在对应命令中添加 `--device cpu`。不同配置、设备和后端不保证逐位一致；CPU 小规模验证也不等同于完整实验的重复训练。
 
-## 结构
+## 仓库结构与本地文件
 
 ```text
+README.md            Chinese README
+README.en.md         English README
+requirements.txt     Python dependencies
 configs/             Training and comparison configurations
 denoise/
   model.py           Linear patch projections and Transformer blocks
@@ -84,10 +85,22 @@ denoise/
   evaluate.py        Quantitative evaluation and exports
   figures.py         Figures from floating-point arrays
   audit.py           Independent verification of exported metrics
+  experiment.py      Controlled comparison driver
 tests/               Structural and numerical contract tests
+docs/                Public project documentation
+assignment/          Local assignment requirements and supplied materials
+reports/             Local reports, experiment records, and submission drafts
+personal/            Local notes, input images, and archives
+data/                Downloaded datasets (generated locally)
+runs/                Checkpoints and training state (generated locally)
+outputs/             Evaluation exports and figures (generated locally)
 ```
 
-`nonoverlap.json`、`context.json` 和 `final.json` 保留结构及不含灰度增强的对照配置。数据、权重、运行记录与生成结果由 `.gitignore` 排除。仅加载可信来源的完整训练断点。
+中英文 README 均保留在根目录，通过页首链接切换。所有文件和目录使用英文 ASCII 名称，建议采用 `snake_case`。
+
+`assignment/` 存放作业要求和提供的材料；`reports/` 存放报告、实验计划、指标汇总及提交草稿；`personal/` 存放个人文件，旧备份集中在 `personal/archive/`。这三个目录只跟踪空的 `.gitkeep` 占位文件，实际内容由 `.gitignore` 排除。`docs/` 仅保存通用项目文档，README 不引用本地报告。
+
+`nonoverlap.json`、`context.json` 和 `final.json` 保留结构及不含灰度增强的对照配置。数据、权重、运行记录与生成结果也由 `.gitignore` 排除，运行时按需创建对应目录。仅加载可信来源的完整训练断点。目录职责及提交检查见[仓库布局说明](docs/repository_layout.md)。
 
 ## 参考文献
 

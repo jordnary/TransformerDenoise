@@ -39,10 +39,10 @@ python -m denoise.evaluate --checkpoint runs/robust/model.pt --split validation 
 ```powershell
 python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --project-output --output outputs/test
 python -m denoise.audit outputs/test
-python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --project-output --external examples/image.png --output outputs/example
+python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --project-output --external personal/image.png --output outputs/example
 ```
 
-`examples/image.png` denotes a user-provided image. External images are converted to grayscale without resizing; evaluation reads images without updating weights. The default is the official 10,000-image MNIST test set. Digit examples are the first sample of each class in the original order. `--split train-first` evaluates first training samples and explicitly marks the output as training data.
+`personal/image.png` denotes a user-provided local image that is not distributed with the repository. External images are converted to grayscale without resizing; evaluation reads images without updating weights. The default is the official 10,000-image MNIST test set. Digit examples are the first sample of each class in the original order. `--split train-first` evaluates first training samples and explicitly marks the output as training data.
 
 Noise is generated before batched inference and does not depend on batch size. Outputs include per-image CSV metrics, JSON summaries, floating-point NPZ files, and figures. `--project-output` constrains only the reconstruction; raw-output metrics remain available. The fixed `[0, 1]` display range does not modify metric arrays.
 
@@ -53,14 +53,12 @@ Baselines include the noisy input and a fixed `3 × 3` Gaussian smoother. `--ens
 An additional controlled experiment compares continued training, MNIST structure augmentation, and structure augmentation with an overlapping refinement branch. Clean affine crops and convex mixtures use only MNIST images within the current split; fresh fixed-strength Gaussian noise is added afterwards. Mixed-size training covers `28 × 28` and `32 × 32`. The optional branch combines shallow and deep features, predicts overlapping residual patches through a linear layer, and normalizes their sums by coverage counts. It uses no convolution.
 
 ```powershell
-python -m denoise.experiment --external assignment/test.png
+python -m denoise.experiment --external personal/image.png
 ```
 
-Complete the base and intensity-augmentation stages above first. The experiment selects by a preregistered three-domain validation L1 criterion with a maximum 0.20 dB digit-validation PSNR loss, then trains on all 60,000 images for eight fixed epochs before reading the external test image. Outputs include validation comparisons, the selection decision, paired old/new evaluations across three fixed noise seeds, and a five-panel image comparison. All Python modules in `denoise`, including this driver, remain within 800 lines; tests enforce the limit. Existing model artifacts and defaults are preserved.
+Complete the base and intensity-augmentation stages above first. The experiment selects by a fixed three-domain validation L1 criterion with a maximum 0.20 dB digit-validation PSNR loss, then trains on all 60,000 images for eight fixed epochs before reading the external test image. Outputs include validation comparisons, the selection decision, paired old/new evaluations across three fixed noise seeds, and a five-panel image comparison.
 
-See the [experiment plan](docs/experiment_plan.md) for the fixed protocol. Repeating the command resumes training stages; retain their configurations and initialization checkpoints.
-
-The [experiment results](docs/experiment_results.md) show no material improvement on the external test image. The validation-selected final model slightly reduced mean PSNR across three noise seeds; post-selection diagnostics of the structure variants gained about 0.03 dB and remained below Gaussian smoothing. The original model remains the default, and new weights are retained as experimental candidates.
+Comparison configurations are in `configs/experiment_*.json`, generated results go to `outputs/experiment/`, and checkpoints go to `runs/experiment/`. Repeating the command resumes training stages; retain their configurations and initialization checkpoints. Personal experiment plans, reports, and metric summaries belong in local `reports/experiments/` and are not distributed with the repository.
 
 ## CPU fallback
 
@@ -73,9 +71,12 @@ python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --device cpu 
 
 The CPU configuration offers a separate recipe with smaller batches and the same architecture. Add `--device cpu` to the corresponding commands to execute the complete three-stage recipe. Different configurations, devices, and backends do not guarantee bitwise agreement; small CPU checks do not constitute a complete training replication.
 
-## Layout
+## Repository layout and local files
 
 ```text
+README.md            Chinese README
+README.en.md         English README
+requirements.txt     Python dependencies
 configs/             Training and comparison configurations
 denoise/
   model.py           Linear patch projections and Transformer blocks
@@ -84,10 +85,22 @@ denoise/
   evaluate.py        Quantitative evaluation and exports
   figures.py         Figures from floating-point arrays
   audit.py           Independent verification of exported metrics
+  experiment.py      Controlled comparison driver
 tests/               Structural and numerical contract tests
+docs/                Public project documentation
+assignment/          Local assignment requirements and supplied materials
+reports/             Local reports, experiment records, and submission drafts
+personal/            Local notes, input images, and archives
+data/                Downloaded datasets (generated locally)
+runs/                Checkpoints and training state (generated locally)
+outputs/             Evaluation exports and figures (generated locally)
 ```
 
-`nonoverlap.json`, `context.json`, and `final.json` retain architecture and non-intensity-augmented comparison configurations. Data, weights, run records, and generated outputs are excluded by `.gitignore`. Only load complete training checkpoints from trusted sources.
+Both READMEs stay in the repository root, with language-switch links at the top. Use English ASCII file and directory names, preferably `snake_case`.
+
+Use `assignment/` for assignment requirements and supplied materials, `reports/` for reports, experiment plans, metric summaries, and submission drafts, and `personal/` for personal files. Older backups belong in `personal/archive/`. Only empty `.gitkeep` placeholders are tracked in these three directories; `.gitignore` excludes their actual contents. Keep only general project documentation in `docs/` and do not link local reports from the READMEs.
+
+`nonoverlap.json`, `context.json`, and `final.json` retain architecture and non-intensity-augmented comparison configurations. Data, weights, run records, and generated outputs are also excluded by `.gitignore`; their directories are created as needed at runtime. Only load complete training checkpoints from trusted sources. See the [repository layout guide](docs/repository_layout.md) for directory responsibilities and pre-commit checks.
 
 ## References
 
