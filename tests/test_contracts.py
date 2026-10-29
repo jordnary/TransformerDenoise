@@ -1,7 +1,7 @@
-"""Numerical and structural contracts for the denoising experiment."""
+"""Contracts for original targets, architecture, noise, and CPU execution."""
 
-import unittest
 import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,9 +10,10 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from denoise.common import SIGMA, add_noise, first_indices, fixed_noise, predict, read_json, resolve_device, save_checkpoint, scores, split_indices, tone_augment, write_json
+from denoise.common import (SIGMA, TARGET_POLICY, add_noise, check_checkpoint,
+                           clean_batch, first_indices, fixed_noise, predict,
+                           read_json, resolve_device, save_checkpoint, scores, write_json)
 from denoise.model import Denoiser, partition, reverse, shift_mask
-from denoise.evaluate import gaussian_baseline
 from denoise.train import run
 
 
@@ -27,13 +28,19 @@ class Contracts(unittest.TestCase):
         self.assertFalse(any(isinstance(m, conv_types) for m in model.modules()))
         for shape in ((28, 28), (32, 32), (28, 32), (29, 31)):
             x = torch.randn(2, 1, *shape)
-            output = model(x)
-            self.assertEqual(output.shape, x.shape)
-            torch.testing.assert_close(output, x)
-            overlap = Denoiser(dim=16, depth=2, heads=2, halo=2)
-            torch.testing.assert_close(overlap(x), x)
+            self.assertEqual(model(x).shape, x.shape)
+            torch.testing.assert_close(model(x), x)
         with self.assertRaises(ValueError):
             model(torch.ones(1, 3, 28, 28))
+
+    def test_brightness_equivariance_and_batch_independence(self):
+        torch.manual_seed(8)
+        model = Denoiser(dim=16, depth=2, heads=2).eval()
+        nn.init.normal_(model.head.weight, std=0.02)
+        x = torch.randn(3, 1, 28, 32)
+        y = predict(model, x)
+        torch.testing.assert_close(predict(model, x + 0.4), y + 0.4, atol=2e-6, rtol=2e-6)
+        torch.testing.assert_close(y, torch.cat([predict(model, b) for b in x.split(1)]), atol=2e-6, rtol=2e-6)
 
     def test_nonzero_gradients_and_parameter_update(self):
         torch.manual_seed(4)
@@ -69,49 +76,46 @@ class Contracts(unittest.TestCase):
         self.assertLess(float(noisy.min()), 0)
         self.assertGreater(float(noisy.max()), 1)
         torch.testing.assert_close(fixed_noise(clean.shape, 7), noise)
-        toned = tone_augment(clean[:32], 1, torch.Generator().manual_seed(4))
-        self.assertGreaterEqual(float(toned.min()), 0)
-        self.assertLessEqual(float(toned.max()), 1)
 
-    def test_metrics_use_unit_peak_and_unclipped_values(self):
+    def test_metrics_and_output_projection(self):
         clean = torch.zeros(2, 1, 28, 28)
         result = scores(torch.full_like(clean, -0.1), clean)
         torch.testing.assert_close(result["psnr"], torch.full((2,), 20.0, dtype=torch.float64))
-        self.assertAlmostEqual(float(result["l1"].mean()), 0.1, places=6)
         self.assertTrue(torch.isinf(scores(clean, clean)["psnr"]).all())
         clean = torch.rand(5, 1, 28, 28)
         pred = clean + torch.randn_like(clean)
         self.assertTrue(torch.all(scores(pred.clamp(0, 1), clean)["l1"] <= scores(pred, clean)["l1"]))
         self.assertTrue(torch.all(scores(pred.clamp(0, 1), clean)["mse"] <= scores(pred, clean)["mse"]))
 
-    def test_disjoint_split_and_first_occurrence(self):
-        train, validation = split_indices(60000, 5000, 3407)
-        self.assertEqual(len(train), 55000)
-        self.assertEqual(len(set(train.tolist()) & set(validation.tolist())), 0)
-        self.assertEqual(len(set(train.tolist()) | set(validation.tolist())), 60000)
-        labels = torch.tensor([7, 2, 1, 0, 4, 1, 4, 9, 5, 9, 0, 6, 9, 0, 1, 5, 9, 7, 3, 4, 9, 6, 6, 5, 4, 0, 7, 4, 0, 1, 3, 1, 3, 4, 7, 2, 7, 1, 2, 1, 1, 7, 4, 2, 3, 5, 1, 2, 4, 4, 6, 3, 5, 5, 6, 0, 4, 1, 9, 5, 7, 8])
-        self.assertEqual(first_indices(labels).tolist(), [3, 2, 1, 18, 4, 8, 11, 0, 61, 7])
+    def test_original_targets_and_first_occurrence(self):
+        images = torch.randint(0, 256, (20, 1, 28, 28), dtype=torch.uint8)
+        before = images.clone()
+        indices = torch.tensor([8, 2, 15, 3])
+        target = clean_batch(images, indices)
+        torch.testing.assert_close(target, before[indices].float() / 255, rtol=0, atol=0)
+        torch.testing.assert_close(images, before, rtol=0, atol=0)
+        with self.assertRaises(ValueError):
+            clean_batch(target, torch.arange(len(target)))
+        labels = torch.tensor([5, 0, 4, 1, 9, 2, 1, 3, 1, 4, 3, 5, 3, 6, 1, 7, 2, 8])
+        self.assertEqual(first_indices(labels).tolist(), [1, 3, 5, 7, 2, 0, 13, 15, 17, 4])
+        with self.assertRaises(ValueError):
+            check_checkpoint({"config": {"tone_probability": 0.5}})
 
-    def test_ensemble_inverse_and_batch_independence(self):
-        torch.manual_seed(8)
-        model = Denoiser(dim=16, depth=2, heads=2).eval()
-        nn.init.normal_(model.head.weight, std=0.01)
-        x = torch.randn(3, 1, 28, 32)
-        torch.testing.assert_close(predict(nn.Identity(), x, True), x)
-        full = predict(model, x, True)
-        parts = torch.cat([predict(model, part, True) for part in x.split(1)])
-        torch.testing.assert_close(full, parts, atol=2e-6, rtol=2e-6)
-        torch.testing.assert_close(gaussian_baseline(torch.ones_like(x)), torch.ones_like(x))
-
-    def test_cpu_fallback_and_training_checkpoint(self):
+    def test_cpu_training_gt_and_exact_resume(self):
         with patch("torch.cuda.is_available", return_value=False):
             self.assertEqual(resolve_device("auto"), torch.device("cpu"))
-            with self.assertRaises(RuntimeError):
-                resolve_device("cuda")
-        cfg = read_json("configs/overlap.json")
-        cfg.update(epochs=2, validation_size=4, batch_size=4, eval_batch_size=4, tone_probability=0.5, tone_seed=6789)
+        cfg = read_json("configs/train.json")
+        cfg.update(epochs=2, batch_size=4)
         cfg["model"].update(dim=16, depth=2, heads=2)
         images = torch.randint(0, 256, (16, 1, 28, 28), dtype=torch.uint8)
+        reference = images.float() / 255
+        real_l1 = F.l1_loss
+        seen = []
+        def inspect_loss(pred, target, **kwargs):
+            for item in target:
+                self.assertTrue(any(torch.equal(item, original) for original in reference))
+                seen.append(item.clone())
+            return real_l1(pred, target, **kwargs)
         with tempfile.TemporaryDirectory() as directory, patch("denoise.train.dataset", return_value=(images, None)):
             root = Path(directory)
             write_json(root / "config.json", cfg)
@@ -119,20 +123,17 @@ class Contracts(unittest.TestCase):
                 save_checkpoint(path, value)
                 if Path(path).name == "last.pt" and value["epoch"] == 1:
                     save_checkpoint(root / "epoch1.pt", value)
-            with patch("denoise.train.save_checkpoint", side_effect=capture):
-                history = run(root / "config.json", root / "selection", device_name="cpu")
-            self.assertEqual(len(history), 2)
-            saved = torch.load(root / "selection/model.pt", map_location="cpu", weights_only=True)
-            self.assertFalse(saved["full"])
-            expected = torch.load(root / "selection/last.pt", map_location="cpu", weights_only=False)["model"]
-            restored = run(root / "config.json", root / "selection", resume=root / "epoch1.pt", device_name="cpu")
-            for key in ("train_l1", "val_l1", "val_mse", "val_psnr"):
-                self.assertEqual(history[-1][key], restored[-1][key])
-            actual = torch.load(root / "selection/last.pt", map_location="cpu", weights_only=False)["model"]
+            with patch("denoise.train.save_checkpoint", side_effect=capture), patch("denoise.train.F.l1_loss", side_effect=inspect_loss):
+                history = run(root / "config.json", root / "run", device_name="cpu")
+            self.assertEqual(len(seen), 32)
+            expected = torch.load(root / "run/last.pt", map_location="cpu", weights_only=False)["model"]
+            restored = run(root / "config.json", root / "run", resume=root / "epoch1.pt", device_name="cpu")
+            self.assertEqual(history[-1]["train_l1"], restored[-1]["train_l1"])
+            actual = torch.load(root / "run/last.pt", map_location="cpu", weights_only=False)["model"]
             for key in expected:
                 torch.testing.assert_close(expected[key], actual[key], rtol=0, atol=0)
-            full = run(root / "config.json", root / "full", full=True, device_name="cpu", initialize=root / "selection/model.pt")
-            self.assertNotIn("val_l1", full[-1])
+            saved = torch.load(root / "run/model.pt", map_location="cpu", weights_only=True)
+            self.assertEqual(saved["target_policy"], TARGET_POLICY)
 
 
 if __name__ == "__main__":

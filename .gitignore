@@ -4,6 +4,7 @@
 /assignment/
 /reports/
 /submission/
+/archive/
 # Downloaded data, experiment artifacts, and model weights
 /data/
 /runs/

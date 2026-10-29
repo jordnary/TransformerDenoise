@@ -2,81 +2,71 @@
 
 [简体中文](README.md) · **English**
 
-A PyTorch experiment for grayscale image denoising. The model is trained from scratch using overlapping patches, windowed self-attention, two-dimensional relative position biases, and SwiGLU. It supports variable input sizes, contains no convolutional layers, and uses no existing denoising model or external pretrained weights.
+A grayscale denoising model trained from scratch in PyTorch. It uses overlapping patches, windowed self-attention, two-dimensional relative position biases, and SwiGLU. There are no convolutional layers, existing denoising models, or external pretrained weights.
 
-## Method
+## Model and data
 
-- Observation model: `y = x + ε`, with `x ∈ [0, 1]` and `ε ~ N(0, (50/255)²)`. Noisy inputs are not clipped.
-- Objective: mean pixelwise L1. PSNR uses a fixed peak of `1`; mean per-image PSNR and PSNR derived from aggregate MSE are reported separately.
-- Architecture: linear projections of `6 × 6` patches at stride `2`, eight regular/shifted-window Transformer blocks, 64 feature channels, four attention heads, and 338,660 parameters.
-- Spatial dimensions: reflection padding, linear projections, and cropping support `28 × 28` and `32 × 32` without resizing.
-- Training: learn digit structure first, then broaden the distribution using brightness, contrast, and grayscale inversion. Original and intensity-varied validation L1 are weighted equally for selection.
-- Default inference: one forward pass and projection to `[0, 1]`. Eight-transform self-ensembling is an optional comparison.
+- Original MNIST pixels are divided only by 255. Targets remain the original clean images without rotation, reflection, cropping, or intensity changes.
+- Independent zero-mean Gaussian noise with standard deviation 50/255 is added without clipping noisy inputs.
+- Relative intensities are computed inside the network; an input residual preserves absolute brightness. Feature computation does not modify targets.
+- Eight window Transformer blocks, 64 feature channels, four attention heads, and 338,660 parameters.
+- The same model directly handles 28×28, 32×32, and other supported sizes, preserving input dimensions.
+- Training uses only mean L1. Final reconstructions are projected to [0,1], with raw-output metrics retained.
 
-## Installation and training
+## Training
 
-Python 3.11 or later is required. Install a device-compatible PyTorch build following the [official instructions](https://pytorch.org/get-started/locally/), then install the project dependencies.
+Python 3.11 or later is required. Install a backend-appropriate PyTorch build, then install the dependencies.
 
 ```powershell
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
-python -m denoise.train --config configs/overlap.json --output runs/overlap
-python -m denoise.train --config configs/robust.json --output runs/robust --initialize runs/overlap/model.pt
-python -m denoise.train --config configs/robust_final.json --output runs/robust_final --full --initialize runs/robust/model.pt
+python -m denoise.train --config configs/train.json --output runs/original
 ```
 
-MNIST is downloaded to `data/`. The first two stages use a fixed 55,000/5,000 training/validation split. The final stage optimizes all 60,000 training images for a fixed budget. `model.pt` stores EMA weights; `last.pt` stores resumable state. Full-data models cannot be used for independent validation selection; the program rejects such evaluation or initialization.
+All 60,000 original training images are used for a fixed epoch budget; the official test set is excluded from training. Data is downloaded to `data/`. `model.pt` stores EMA weights, and `last.pt` stores complete resumable state. The fixed final-epoch checkpoint is evaluated.
 
 ```powershell
-python -m denoise.train --config configs/robust.json --output runs/robust --resume runs/robust/last.pt
-python -m denoise.evaluate --checkpoint runs/robust/model.pt --split validation --seed 12345 --ensemble --project-output --output outputs/validation
+python -m denoise.train --config configs/train.json --output runs/original --resume runs/original/last.pt
 ```
 
-`--initialize` transfers weights between stages. `--resume` restores the same stage and requires a matching configuration. A new run never silently overwrites existing training checkpoints.
+Resumption requires matching configuration, original-data digest, and target protocol. Incompatible legacy checkpoints are rejected, and existing training is not silently overwritten. Only load complete training checkpoints from trusted sources.
 
 ## Evaluation and verification
 
 ```powershell
-python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --project-output --output outputs/test
+python -m denoise.evaluate --checkpoint runs/original/model.pt --split train-first --external examples/image.png --output outputs/required
+python -m denoise.evaluate --checkpoint runs/original/model.pt --split test --seed 20261029 --output outputs/test
+python -m denoise.audit outputs/required
 python -m denoise.audit outputs/test
-python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --project-output --external examples/image.png --output outputs/example
 ```
 
-`examples/image.png` denotes a user-provided image. External images are converted to grayscale without resizing; evaluation reads images without updating weights. The default is the official 10,000-image MNIST test set. Digit examples are the first sample of each class in the original order. `--split train-first` evaluates first training samples and explicitly marks the output as training data.
+`examples/image.png` denotes a user-provided grayscale image. Its dimensions are preserved and noise is added only to a copy. `train-first` selects the first sample of each class in the original training order; `test` evaluates all 10,000 official test images. These results are clearly distinguished.
 
-Noise is generated before batched inference and does not depend on batch size. Outputs include per-image CSV metrics, JSON summaries, floating-point NPZ files, and figures. `--project-output` constrains only the reconstruction; raw-output metrics remain available. The fixed `[0, 1]` display range does not modify metric arrays.
-
-Baselines include the noisy input and a fixed `3 × 3` Gaussian smoother. `--ensemble` enables eight-transform self-ensembling, requiring eight forward passes. MNIST and natural textures differ in distribution; intensity augmentation does not establish reliable generalization to all natural images.
+Noise is generated before batching and does not depend on batch size. Outputs include comparison figures, per-image CSV metrics, JSON summaries, and floating-point NPZ files. PSNR uses a fixed peak of 1; mean per-image PSNR and PSNR derived from aggregate MSE are both reported. The [0,1] display range does not modify noisy evaluation arrays.
 
 ## CPU fallback
 
-`--device auto` selects an available backend; `--device cpu` forces CPU execution. CPU uses full precision without gradient scaling and supports training, checkpoint resumption, and inference from the same checkpoint.
+`--device auto` selects an available backend; `--device cpu` forces CPU execution. CPU supports full training, exact resumption in the same environment, and inference from the same weights without mixed precision.
 
 ```powershell
 python -m denoise.train --config configs/cpu.json --device cpu --output runs/cpu
-python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --device cpu --batch-size 16 --project-output --output outputs/cpu
+python -m denoise.evaluate --checkpoint runs/original/model.pt --device cpu --batch-size 16 --split test --output outputs/cpu
 ```
 
-The CPU configuration offers a separate recipe with smaller batches and the same architecture. Add `--device cpu` to the corresponding commands to execute the complete three-stage recipe. Different configurations, devices, and backends do not guarantee bitwise agreement; small CPU checks do not constitute a complete training replication.
+The CPU configuration uses smaller batches. To retain the main experiment's hyperparameters, specify `--device cpu` with `configs/train.json`. Minor floating-point differences across compute backends are possible.
 
 ## Layout
 
 ```text
-configs/             Training and comparison configurations
+configs/             Training and CPU configurations
 denoise/
-  model.py           Linear patch projections and Transformer blocks
-  common.py          Data, augmentation, noise, metrics, inference
-  train.py           Optimization, selection, and checkpointing
-  evaluate.py        Quantitative evaluation and exports
-  figures.py         Figures from floating-point arrays
-  audit.py           Independent verification of exported metrics
-tests/               Structural and numerical contract tests
+  model.py           Linear patch projections and attention blocks
+  common.py          Original targets, noise, metrics and checkpoints
+  train.py           L1 training and checkpoint resumption
+  evaluate.py        Fixed-sample and full-test evaluation
+  figures.py         Comparison figures and training curves
+  audit.py           Independent verification of numerical exports
+tests/               Data, architecture and numerical contract tests
 ```
 
-`nonoverlap.json`, `context.json`, and `final.json` retain architecture and non-intensity-augmented comparison configurations. Data, weights, run records, and generated outputs are excluded by `.gitignore`. Only load complete training checkpoints from trusted sources.
-
-## References
-
-- Vaswani et al. [Attention Is All You Need](https://arxiv.org/abs/1706.03762).
-- Liu et al. [Swin Transformer](https://arxiv.org/abs/2103.14030).
-- Shazeer. [GLU Variants Improve Transformer](https://arxiv.org/abs/2002.05202).
+Data, weights, run records, and generated results are excluded by `.gitignore`. Natural images differ from MNIST; a single reconstruction does not establish general natural-image denoising performance.

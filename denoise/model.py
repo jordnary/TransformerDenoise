@@ -82,7 +82,7 @@ class Block(nn.Module):
 
 
 class Denoiser(nn.Module):
-    def __init__(self, dim=64, depth=8, heads=4, patch=2, window=4, halo=0):
+    def __init__(self, dim=64, depth=8, heads=4, patch=2, window=4, halo=2):
         super().__init__()
         if dim < 1 or heads < 1 or dim % heads or patch < 1 or window < 2 or depth < 1 or halo < 0:
             raise ValueError("Invalid Transformer dimensions")
@@ -105,6 +105,7 @@ class Denoiser(nn.Module):
         z = F.pad(noisy, (self.halo,) * 4, mode="reflect") if self.halo else noisy
         z = z.unfold(2, kernel, p).unfold(3, kernel, p).permute(0, 2, 3, 1, 4, 5)
         z = z.reshape(b, hh, ww, kernel * kernel)
+        z = z - z.mean(dim=-1, keepdim=True)
         z = self.embed(z)
         mask = shift_mask(hh, ww, self.window, self.window // 2, x.device)
         for block in self.blocks:
