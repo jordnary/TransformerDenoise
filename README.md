@@ -2,89 +2,81 @@
 
 **简体中文** · [English](README.en.md)
 
-基于 PyTorch 的灰度图像去噪实验。模型从零训练，通过线性图像块映射、窗口自注意力、二维相对位置偏置与 SwiGLU 重建干净图像，网络不含卷积层，也不使用预训练权重。
+基于 PyTorch 的灰度图像去噪实验。模型从零训练，结合重叠图像块、窗口自注意力、二维相对位置偏置与 SwiGLU，支持可变输入尺寸。网络不含卷积层，不调用现成去噪模型或外部预训练权重。
 
 ## 方法
 
-- 噪声模型：`y = x + ε`，其中 `x ∈ [0, 1]`，`ε ~ N(0, (50/255)²)`；加噪输入不裁剪。
-- 重建目标：像素平均 L1 损失；PSNR 使用固定峰值 `1`，同时报告平均逐图 PSNR 与由全体 MSE 换算的 PSNR。
-- 模型：步长为 `2` 的 `6 × 6` 重叠图像块线性映射、8 个交替普通/移位窗口 Transformer 块、4 个注意力头、64 维特征、残差输出。
-- 尺寸处理：反射填充至窗口网格，推理后裁回输入尺寸；支持 `28 × 28`、`32 × 32` 及其他满足最小尺寸的灰度输入。
-- 模型选择：固定的 55,000/5,000 训练/验证划分，动态训练噪声与固定验证噪声，依据验证 L1 保存权重。
-- 推理：单次前向或八种旋转/镜像变换的自集成；分别记录原始输出与投影至 `[0, 1]` 后的指标。
+- 观测模型：`y = x + ε`，`x ∈ [0, 1]`，`ε ~ N(0, (50/255)²)`；加噪输入不裁剪。
+- 重建目标：像素平均 L1；PSNR 固定使用峰值 `1`，分别报告逐图平均值与全体 MSE 对应的 PSNR。
+- 网络：步长 `2` 的 `6 × 6` 图像块线性映射，8 个普通/移位窗口 Transformer 块，64 维特征，4 个注意力头，共 338,660 个参数。
+- 尺寸适配：反射填充、线性投影与输出裁回；直接支持 `28 × 28`、`32 × 32`，不缩放图像。
+- 训练：先学习数字结构，再以亮度、对比度和灰度反转增强拓宽分布；原灰度与变灰度验证 L1 等权用于选择检查点。
+- 默认推理：一次前向计算，再投影至 `[0, 1]`。八方向自集成仅作为可选对照。
 
 ## 安装与训练
 
-需要 Python 3.11 或更新版本。按照 [PyTorch 安装说明](https://pytorch.org/get-started/locally/)安装与计算设备匹配的 PyTorch，再安装其余依赖。
+需要 Python 3.11 或更新版本。按照 [PyTorch 官方说明](https://pytorch.org/get-started/locally/)安装匹配计算设备的 PyTorch，再安装项目依赖。
 
 ```powershell
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 python -m denoise.train --config configs/overlap.json --output runs/overlap
+python -m denoise.train --config configs/robust.json --output runs/robust --initialize runs/overlap/model.pt
+python -m denoise.train --config configs/robust_final.json --output runs/robust_final --full --initialize runs/robust/model.pt
 ```
 
-MNIST 会下载到 `data/`。训练参数集中在 JSON 配置中。`runs/overlap/model.pt` 保存验证 L1 最优的指数移动平均权重，`last.pt` 保存完整的断点续训状态。
+MNIST 下载至 `data/`。前两阶段采用固定的 55,000/5,000 训练/验证划分；最后阶段在全部 60,000 张训练图像上按固定预算优化。`model.pt` 保存 EMA 权重，`last.pt` 保存可恢复状态。全训练集模型不能再用于独立验证集选择，程序会拒绝此类评估或初始化。
 
 ```powershell
-python -m denoise.train --config configs/overlap.json --output runs/overlap --resume runs/overlap/last.pt
-python -m denoise.evaluate --checkpoint runs/overlap/model.pt --split validation --seed 12345 --ensemble --project-output --mean-consistency --output outputs/validation
+python -m denoise.train --config configs/robust.json --output runs/robust --resume runs/robust/last.pt
+python -m denoise.evaluate --checkpoint runs/robust/model.pt --split validation --seed 12345 --ensemble --project-output --output outputs/validation
 ```
 
-固定最终训练预算后，使用 `--full` 在全部 60,000 张训练图像上优化。`--initialize` 读取本项目模型选择阶段得到的权重，以较低学习率继续训练；也可以省略该参数从头训练。完整训练模型不再具有独立验证集；`evaluate` 会拒绝对其运行验证集评估。
+`--initialize` 用于阶段间初始化；`--resume` 恢复同一阶段，要求配置一致。输出目录已有检查点时，新训练不会静默覆盖现有状态。
+
+## 评估与核验
 
 ```powershell
-python -m denoise.train --config configs/final.json --output runs/final --full --initialize runs/overlap/model.pt
-python -m denoise.evaluate --checkpoint runs/final/model.pt --ensemble --project-output --mean-consistency --output outputs/test
+python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --project-output --output outputs/test
+python -m denoise.audit outputs/test
+python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --project-output --external examples/image.png --output outputs/example
 ```
 
-## 评估
+`examples/image.png` 表示自行提供的图片。外部图片转换为灰度但不缩放；评估程序只读取图片，不更新权重。默认评估官方 10,000 张 MNIST 测试图像，数字样例固定取原始顺序中每类第一个样本。`--split train-first` 单独评估训练集各类首样本，输出明确标记为训练数据。
 
-测试集按原始顺序评估；每类的第一个样本由标签索引自动确定。噪声在分批推理之前统一生成，因此不随推理批大小改变。训练、验证和测试的随机种子互相独立。
+噪声在分批推理之前统一生成，不依赖推理批大小。输出包括逐图 CSV、汇总 JSON、浮点 NPZ 与对比图。`--project-output` 只约束重建结果，原始输出指标仍被保留。图片采用固定的 `[0, 1]` 显示范围，显示不会修改指标数组。
 
-```powershell
-python -m denoise.evaluate --checkpoint runs/final/model.pt --ensemble --project-output --mean-consistency --external examples/image.png --output outputs/example
-python -m denoise.audit outputs/example
-```
+基线包括含噪输入及固定 `3 × 3` 高斯平滑。`--ensemble` 开启八方向自集成，需八次前向计算。MNIST 与自然纹理存在分布差异，灰度增强不意味着对所有自然图像均有可靠泛化能力。
 
-`--external` 接受自行提供的图片并转换为灰度，不缩放尺寸。外部图片不参与训练或模型选择。输出包括逐图 CSV、汇总 JSON、保存浮点像素的 NPZ 和对比图。`--project-output` 仅对最终重建结果施加灰度范围约束；原始输出指标仍完整保留。图像显示范围固定为 `[0, 1]`，不会改写计算指标的数组。
+## CPU 备选
 
-默认基线为加噪输入及固定参数的 `3 × 3` 高斯平滑。自集成需要八次前向计算，是否启用应依据验证集决定。MNIST 是手写数字分布，在自然图像上的效果需要单独检验。
-
-`--mean-consistency` 将最终图像均值限制在含噪均值的五倍标准误区间内，并保留 `[0, 1]` 范围。该约束由已知噪声方差确定，只在重建出现较大整体亮度偏移时触发，不使用干净参考图像。原始、自集成、范围投影和均值约束的指标分别输出；该约束不保证对任意输入降低 L1。
-
-`configs/nonoverlap.json` 与 `configs/context.json` 分别提供非重叠及更大邻域的结构对照；正式训练采用 `configs/overlap.json` 和 `configs/final.json`。
-
-## CPU 运行
-
-`--device auto` 自动选择可用计算后端。`--device cpu` 可强制使用 CPU，无需修改程序；CPU 使用完整精度，关闭混合精度与梯度缩放。CPU 配置采用较小的批大小，网络结构保持一致。
+`--device auto` 自动选择可用后端；`--device cpu` 强制使用 CPU。CPU 使用完整精度并关闭梯度缩放，支持训练、断点恢复和同一检查点的推理。
 
 ```powershell
 python -m denoise.train --config configs/cpu.json --device cpu --output runs/cpu
-python -m denoise.evaluate --checkpoint runs/final/model.pt --device cpu --batch-size 16 --ensemble --project-output --mean-consistency --output outputs/cpu
+python -m denoise.evaluate --checkpoint runs/robust_final/model.pt --device cpu --batch-size 16 --project-output --output outputs/cpu
 ```
 
-训练配置、随机噪声和优化更新会影响结果。CPU 配置是独立的训练方案，不能将其未经完整训练的输出视为其他配置的复现结果。
+CPU 配置采用较小批大小，提供结构相同的独立训练方案。执行完整三阶段方案时，可在对应命令中添加 `--device cpu`。不同配置、设备和后端不保证逐位一致；CPU 小规模验证也不等同于完整实验的重复训练。
 
 ## 结构
 
 ```text
-configs/             Experiment configurations
+configs/             Training and comparison configurations
 denoise/
-  model.py           Attention blocks and residual reconstruction
-  common.py          Data, noise, metrics, and inference
-  train.py           Optimization, validation, and checkpointing
-  evaluate.py        Evaluation and numerical exports
-  figures.py         Figures from saved floating-point arrays
-  audit.py           Independent verification of exported results
-tests/               Numerical and architectural contract tests
+  model.py           Linear patch projections and Transformer blocks
+  common.py          Data, augmentation, noise, metrics, inference
+  train.py           Optimization, selection, and checkpointing
+  evaluate.py        Quantitative evaluation and exports
+  figures.py         Figures from floating-point arrays
+  audit.py           Independent verification of exported metrics
+tests/               Structural and numerical contract tests
 ```
 
-数据集、权重、运行记录和生成结果由 `.gitignore` 排除。仅加载可信来源的训练断点；完整续训状态包含优化器对象。固定种子支持实验复现，但不同设备或 PyTorch 后端不保证逐位一致。
+`nonoverlap.json`、`context.json` 和 `final.json` 保留结构及不含灰度增强的对照配置。数据、权重、运行记录与生成结果由 `.gitignore` 排除。仅加载可信来源的完整训练断点。
 
 ## 参考文献
 
 - Vaswani et al. [Attention Is All You Need](https://arxiv.org/abs/1706.03762).
-- Liu et al. [Swin Transformer: Hierarchical Vision Transformer using Shifted Windows](https://arxiv.org/abs/2103.14030).
+- Liu et al. [Swin Transformer](https://arxiv.org/abs/2103.14030).
 - Shazeer. [GLU Variants Improve Transformer](https://arxiv.org/abs/2002.05202).
-
-本项目自行实现各网络组件，仅采用公开的架构思想。

@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from denoise.common import SIGMA, add_noise, first_indices, fixed_noise, mean_consistent, predict, read_json, resolve_device, save_checkpoint, scores, split_indices, write_json
+from denoise.common import SIGMA, add_noise, first_indices, fixed_noise, predict, read_json, resolve_device, save_checkpoint, scores, split_indices, tone_augment, write_json
 from denoise.model import Denoiser, partition, reverse, shift_mask
 from denoise.evaluate import gaussian_baseline
 from denoise.train import run
@@ -69,6 +69,9 @@ class Contracts(unittest.TestCase):
         self.assertLess(float(noisy.min()), 0)
         self.assertGreater(float(noisy.max()), 1)
         torch.testing.assert_close(fixed_noise(clean.shape, 7), noise)
+        toned = tone_augment(clean[:32], 1, torch.Generator().manual_seed(4))
+        self.assertGreaterEqual(float(toned.min()), 0)
+        self.assertLessEqual(float(toned.max()), 1)
 
     def test_metrics_use_unit_peak_and_unclipped_values(self):
         clean = torch.zeros(2, 1, 28, 28)
@@ -89,15 +92,6 @@ class Contracts(unittest.TestCase):
         labels = torch.tensor([7, 2, 1, 0, 4, 1, 4, 9, 5, 9, 0, 6, 9, 0, 1, 5, 9, 7, 3, 4, 9, 6, 6, 5, 4, 0, 7, 4, 0, 1, 3, 1, 3, 4, 7, 2, 7, 1, 2, 1, 1, 7, 4, 2, 3, 5, 1, 2, 4, 4, 6, 3, 5, 5, 6, 0, 4, 1, 9, 5, 7, 8])
         self.assertEqual(first_indices(labels).tolist(), [3, 2, 1, 18, 4, 8, 11, 0, 61, 7])
 
-    def test_mean_constraint_projection(self):
-        clean = torch.full((2, 1, 32, 32), 0.4)
-        pred = torch.zeros_like(clean)
-        adjusted = mean_consistent(pred, clean)
-        self.assertAlmostEqual(float(adjusted.mean()), 0.4 - 5 * SIGMA / 32, places=6)
-        self.assertTrue(torch.all(scores(adjusted, clean)["mse"] < scores(pred, clean)["mse"]))
-        torch.testing.assert_close(mean_consistent(clean, clean), clean, rtol=0, atol=0)
-        torch.testing.assert_close(mean_consistent(adjusted, clean), adjusted, atol=1e-6, rtol=0)
-
     def test_ensemble_inverse_and_batch_independence(self):
         torch.manual_seed(8)
         model = Denoiser(dim=16, depth=2, heads=2).eval()
@@ -115,7 +109,7 @@ class Contracts(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 resolve_device("cuda")
         cfg = read_json("configs/overlap.json")
-        cfg.update(epochs=2, validation_size=4, batch_size=4, eval_batch_size=4)
+        cfg.update(epochs=2, validation_size=4, batch_size=4, eval_batch_size=4, tone_probability=0.5, tone_seed=6789)
         cfg["model"].update(dim=16, depth=2, heads=2)
         images = torch.randint(0, 256, (16, 1, 28, 28), dtype=torch.uint8)
         with tempfile.TemporaryDirectory() as directory, patch("denoise.train.dataset", return_value=(images, None)):

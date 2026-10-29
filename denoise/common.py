@@ -63,6 +63,14 @@ def add_noise(clean, generator=None):
     return clean + SIGMA * torch.randn(clean.shape, device=clean.device, generator=generator)
 
 
+def tone_augment(clean, probability, generator):
+    draws = torch.rand((4, len(clean), 1, 1, 1), device=clean.device, generator=generator)
+    contrast = 0.25 + 0.75 * draws[0]
+    base = torch.where(draws[1] < 0.5, 1 - clean, clean)
+    transformed = contrast * base + (1 - contrast) * draws[2]
+    return torch.where(draws[3] < probability, transformed, clean)
+
+
 def fixed_noise(shape, seed):
     return SIGMA * torch.randn(shape, generator=torch.Generator().manual_seed(seed))
 
@@ -84,27 +92,6 @@ def summarize(metrics):
 
 def first_indices(labels):
     return torch.tensor([int(torch.where(labels == digit)[0][0]) for digit in range(10)])
-
-
-def mean_consistent(prediction, noisy):
-    """Project onto the box and a five-standard-error observation-mean slab."""
-    prediction = prediction.clamp(0, 1)
-    dims = (-3, -2, -1)
-    radius = 5 * SIGMA / noisy[0].numel() ** 0.5
-    observed = noisy.mean(dims, keepdim=True)
-    lower, upper = (observed - radius).clamp(0, 1), (observed + radius).clamp(0, 1)
-    mean = prediction.mean(dims, keepdim=True)
-    target = mean.clamp(min=lower, max=upper)
-    active = (mean < lower) | (mean > upper)
-    if not active.any():
-        return prediction
-    left, right = torch.full_like(mean, -1), torch.ones_like(mean)
-    for _ in range(24):
-        shift = (left + right) / 2
-        below = (prediction + shift).clamp(0, 1).mean(dims, keepdim=True) < target
-        left, right = torch.where(below, shift, left), torch.where(below, right, shift)
-    adjusted = (prediction + (left + right) / 2).clamp(0, 1)
-    return torch.where(active, adjusted, prediction)
 
 
 @torch.inference_mode()

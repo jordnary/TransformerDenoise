@@ -42,7 +42,8 @@ def render_results(output, method):
     if (output / "external.npz").exists():
         with np.load(output / "external.npz") as arrays:
             fig, axes = plt.subplots(1, 3, figsize=(9, 3.5))
-            for ax, key, title in zip(axes, ("clean", "noisy", method), ("Clean (32 x 32)", "Noisy", "Denoised")):
+            h, w = arrays["clean"].shape[-2:]
+            for ax, key, title in zip(axes, ("clean", "noisy", method), (f"Clean ({h} x {w})", "Noisy", "Denoised")):
                 ax.imshow(arrays[key][0, 0], cmap="gray", vmin=0, vmax=1, interpolation="nearest")
                 if key != "clean":
                     mse = np.mean((arrays[key].astype(np.float64) - arrays["clean"]) ** 2)

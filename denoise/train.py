@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 from torch.nn import functional as F
 
-from .common import add_noise, dataset, fixed_noise, read_json, resolve_device, save_checkpoint, setup, sha256, split_indices, write_json
+from .common import add_noise, dataset, fixed_noise, read_json, resolve_device, save_checkpoint, setup, sha256, split_indices, tone_augment, write_json
 from .model import Denoiser
 
 
@@ -18,7 +18,8 @@ def validate(model, images, noise, batch_size, device):
     model.eval()
     errors = torch.zeros(3, device=device, dtype=torch.float64)
     for start in range(0, len(images), batch_size):
-        clean = images[start:start + batch_size].to(device).float() / 255
+        clean = images[start:start + batch_size].to(device).float()
+        clean = clean if images.is_floating_point() else clean / 255
         noisy = clean + noise[start:start + batch_size].to(device)
         pred = model(noisy).float()
         diff = (pred - clean).double().flatten(1)
@@ -40,13 +41,20 @@ def run(config, output, full=False, resume=None, device_name="auto", initialize=
     images = all_images if full else all_images[train_ids]
     validation = None if full else all_images[val_ids]
     noise = None if full else fixed_noise(validation.shape, cfg["validation_noise_seed"])
+    tone_validation = None
+    if not full and cfg.get("tone_probability", 0):
+        tone_validation = tone_augment(validation.float() / 255, 1, torch.Generator().manual_seed(cfg["tone_seed"]))
     images = images.to(device)
     model = Denoiser(**cfg["model"]).to(device)
     initialization = None
     if initialize:
-        if resume or not full:
-            raise ValueError("Initialization requires a new full-data run")
+        if resume:
+            raise ValueError("Initialization requires a new run")
         selected = torch.load(initialize, map_location=device, weights_only=True)
+        if not full and selected["full"]:
+            raise ValueError("Full-data weights would contaminate the validation split")
+        if not full and any(selected["config"][key] != cfg[key] for key in ("split_seed", "validation_size", "data_root")):
+            raise ValueError("Initialization must preserve the validation split")
         if selected["config"]["model"] != cfg["model"]:
             raise ValueError("Initialization architecture mismatch")
         model.load_state_dict(selected["model"])
@@ -83,6 +91,8 @@ def run(config, output, full=False, resume=None, device_name="auto", initialize=
                 code = int(torch.randint(8, (), generator=generator, device=device))
                 clean = clean.rot90(code % 4, (-2, -1))
                 clean = clean.flip(-1) if code >= 4 else clean
+            if cfg.get("tone_probability", 0):
+                clean = tone_augment(clean, cfg["tone_probability"], generator)
             noisy = add_noise(clean, generator)
             step += 1
             ratio = step / max(1, warmup) if step <= warmup else cfg["min_lr_ratio"] + (1 - cfg["min_lr_ratio"]) * (1 + math.cos(math.pi * (step - warmup) / max(1, total_steps - warmup))) / 2
@@ -107,10 +117,13 @@ def run(config, output, full=False, resume=None, device_name="auto", initialize=
         row = {"epoch": epoch + 1, "train_l1": total_loss / len(images), "lr": optimizer.param_groups[0]["lr"]}
         if not full:
             row.update({"val_" + key: value for key, value in validate(ema, validation, noise, cfg["eval_batch_size"], device).items()})
+            if tone_validation is not None:
+                row.update({"tone_" + key: value for key, value in validate(ema, tone_validation, noise, cfg["eval_batch_size"], device).items()})
+            row["selection_l1"] = (row["val_l1"] + row.get("tone_l1", row["val_l1"])) / 2
         row["seconds"] = round(time.perf_counter() - begin, 3)
         history.append(row)
-        improved = full or row["val_l1"] < best
-        best = best if full else min(best, row["val_l1"])
+        improved = full or row["selection_l1"] < best
+        best = best if full else min(best, row["selection_l1"])
         payload = {"config": cfg, "model": ema.state_dict(), "epoch": epoch + 1, "full": full, "initialization_sha256": initialization}
         if improved:
             save_checkpoint(output / "model.pt", payload)
@@ -127,6 +140,6 @@ if __name__ == "__main__":
     parser.add_argument("--full", action="store_true", help="Use all training images, with a fixed epoch budget")
     parser.add_argument("--resume", help="Trusted local training checkpoint")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
-    parser.add_argument("--initialize", help="Checkpoint from this project's selection phase, for full-data refinement")
+    parser.add_argument("--initialize", help="Checkpoint from this project; preserve the split when validation is enabled")
     args = parser.parse_args()
     run(args.config, args.output, args.full, args.resume, args.device, args.initialize)
