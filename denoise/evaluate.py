@@ -33,6 +33,7 @@ def run(args):
     device = resolve_device(args.device)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     check_checkpoint(checkpoint)
+    batch_size = args.batch_size or checkpoint["config"].get("eval_batch_size", 128)
     model = Denoiser(**checkpoint["config"]["model"]).to(device).eval()
     model.load_state_dict(checkpoint["model"])
     images, labels = dataset(checkpoint["config"]["data_root"], args.split == "train-first")
@@ -42,7 +43,7 @@ def run(args):
         images, labels = images[indices], labels[indices]
     clean = images.float() / 255
     noise = fixed_noise(clean.shape, args.seed)
-    predictions, metrics = evaluate(model, clean, noise, args.batch_size, device)
+    predictions, metrics = evaluate(model, clean, noise, batch_size, device)
     selected = first_indices(labels)
     result = {"split": args.split, "count": len(clean), "noise_seed": args.seed, "sigma": 50 / 255,
               "checkpoint_sha256": sha256(args.checkpoint), "epoch": checkpoint["epoch"],
@@ -87,7 +88,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", default="outputs/required")
     parser.add_argument("--split", choices=("test", "train-first"), default="train-first")
     parser.add_argument("--seed", type=int, default=20261101)
-    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--batch-size", type=int, help="Overrides the configured evaluation batch size")
     parser.add_argument("--external")
     parser.add_argument("--external-seed", type=int, default=424242)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")

@@ -10,6 +10,8 @@ import torch
 from torchvision.datasets import MNIST
 
 SIGMA = 50 / 255
+TARGET_POLICY = "original_uint8_div_255"
+MODEL_VERSION = "centered_window_transformer_v1"
 
 
 def resolve_device(requested="auto"):
@@ -52,10 +54,6 @@ def save_checkpoint(path, value):
 def dataset(root, train):
     ds = MNIST(root, train=train, download=True)
     return ds.data[:, None], ds.targets
-
-
-TARGET_POLICY = "original_uint8_div_255"
-MODEL_VERSION = "centered_window_transformer_v1"
 
 
 def clean_batch(images, indices):

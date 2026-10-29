@@ -36,7 +36,7 @@ python -m denoise.train --config configs/train.json --output runs/original --res
 ```powershell
 python -m denoise.evaluate --checkpoint runs/original/model.pt --split train-first --external examples/image.png --output outputs/required
 python -m denoise.evaluate --checkpoint runs/original/model.pt --split test --seed 20261029 --output outputs/test
-python -m denoise.audit outputs/required
+python -m denoise.audit outputs/required --external examples/image.png
 python -m denoise.audit outputs/test
 ```
 
@@ -50,7 +50,7 @@ python -m denoise.audit outputs/test
 
 ```powershell
 python -m denoise.train --config configs/cpu.json --device cpu --output runs/cpu
-python -m denoise.evaluate --checkpoint runs/original/model.pt --device cpu --batch-size 16 --split test --output outputs/cpu
+python -m denoise.evaluate --checkpoint runs/original/model.pt --device cpu --batch-size 16 --split test --seed 20261029 --output outputs/cpu
 ```
 
 CPU 配置采用较小批大小。沿用主实验超参数时，可对 `configs/train.json` 指定 `--device cpu`。不同计算后端的浮点结果可能存在微小差异。

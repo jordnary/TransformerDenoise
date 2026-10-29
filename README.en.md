@@ -36,7 +36,7 @@ Resumption requires matching configuration, original-data digest, and target pro
 ```powershell
 python -m denoise.evaluate --checkpoint runs/original/model.pt --split train-first --external examples/image.png --output outputs/required
 python -m denoise.evaluate --checkpoint runs/original/model.pt --split test --seed 20261029 --output outputs/test
-python -m denoise.audit outputs/required
+python -m denoise.audit outputs/required --external examples/image.png
 python -m denoise.audit outputs/test
 ```
 
@@ -50,7 +50,7 @@ Noise is generated before batching and does not depend on batch size. Outputs in
 
 ```powershell
 python -m denoise.train --config configs/cpu.json --device cpu --output runs/cpu
-python -m denoise.evaluate --checkpoint runs/original/model.pt --device cpu --batch-size 16 --split test --output outputs/cpu
+python -m denoise.evaluate --checkpoint runs/original/model.pt --device cpu --batch-size 16 --split test --seed 20261029 --output outputs/cpu
 ```
 
 The CPU configuration uses smaller batches. To retain the main experiment's hyperparameters, specify `--device cpu` with `configs/train.json`. Minor floating-point differences across compute backends are possible.
