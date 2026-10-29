@@ -60,6 +60,8 @@ Complete the base and intensity-augmentation stages above first. The experiment 
 
 See the [experiment plan](docs/experiment_plan.md) for the fixed protocol. Repeating the command resumes training stages; retain their configurations and initialization checkpoints.
 
+The [experiment results](docs/experiment_results.md) show no material improvement on the external test image. The validation-selected final model slightly reduced mean PSNR across three noise seeds; post-selection diagnostics of the structure variants gained about 0.03 dB and remained below Gaussian smoothing. The original model remains the default, and new weights are retained as experimental candidates.
+
 ## CPU fallback
 
 `--device auto` selects an available backend; `--device cpu` forces CPU execution. CPU uses full precision without gradient scaling and supports training, checkpoint resumption, and inference from the same checkpoint.

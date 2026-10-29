@@ -60,6 +60,8 @@ python -m denoise.experiment --external assignment/test.png
 
 具体配置及数据使用边界见[实验计划](docs/experiment_plan.md)。重新执行相同命令会恢复各阶段训练断点，复用时应保留对应配置和初始化权重。
 
+本轮[实验结果](docs/experiment_results.md)未显示外部测试图有实质改善：验证选定方案的三噪声平均 PSNR 略降，结构增强及重叠修正的事后诊断增益约 0.03 dB，仍低于高斯平滑基线。保留原模型作为默认，新增权重仅作为实验候选。
+
 ## CPU 备选
 
 `--device auto` 自动选择可用后端；`--device cpu` 强制使用 CPU。CPU 使用完整精度并关闭梯度缩放，支持训练、断点恢复和同一检查点的推理。
