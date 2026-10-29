@@ -82,16 +82,28 @@ class Block(nn.Module):
 
 
 class Denoiser(nn.Module):
-    def __init__(self, dim=64, depth=8, heads=4, patch=2, window=4, halo=0):
+    def __init__(self, dim=64, depth=8, heads=4, patch=2, window=4, halo=0, output_halo=0):
         super().__init__()
-        if dim < 1 or heads < 1 or dim % heads or patch < 1 or window < 2 or depth < 1 or halo < 0:
+        if dim < 1 or heads < 1 or dim % heads or patch < 1 or window < 2 or depth < 1 or min(halo, output_halo) < 0:
             raise ValueError("Invalid Transformer dimensions")
         self.patch, self.window, self.halo = patch, window, halo
+        self.output_halo = output_halo
         self.embed = nn.Linear((patch + 2 * halo) ** 2, dim)
         self.blocks = nn.ModuleList(Block(dim, heads, window, (i % 2) * (window // 2)) for i in range(depth))
         self.norm, self.head = nn.LayerNorm(dim), nn.Linear(dim, patch * patch)
         nn.init.zeros_(self.head.weight)
         nn.init.zeros_(self.head.bias)
+        if output_halo:
+            self.refine = nn.Linear(2 * dim, (patch + 2 * output_halo) ** 2)
+            nn.init.zeros_(self.refine.weight)
+            nn.init.zeros_(self.refine.bias)
+
+    def initialize(self, weights):
+        """Allow only a zero-initialized refinement branch to be added."""
+        missing = set(self.state_dict()) - set(weights)
+        if missing not in (set(), {"refine.weight", "refine.bias"}):
+            raise ValueError("Initialization architecture mismatch")
+        self.load_state_dict({**self.state_dict(), **weights}, strict=True)
 
     def forward(self, x):
         if x.ndim != 4 or x.shape[1] != 1 or min(x.shape[-2:]) < 8:
@@ -105,10 +117,17 @@ class Denoiser(nn.Module):
         z = F.pad(noisy, (self.halo,) * 4, mode="reflect") if self.halo else noisy
         z = z.unfold(2, kernel, p).unfold(3, kernel, p).permute(0, 2, 3, 1, 4, 5)
         z = z.reshape(b, hh, ww, kernel * kernel)
-        z = self.embed(z)
+        z = shallow = self.embed(z)
         mask = shift_mask(hh, ww, self.window, self.window // 2, x.device)
         for block in self.blocks:
             z = block(z, mask)
-        z = self.head(self.norm(z)).reshape(b, hh, ww, p, p).permute(0, 1, 3, 2, 4)
-        residual = z.reshape(b, 1, hh * p, ww * p)
+        z = self.norm(z)
+        residual = self.head(z).reshape(b, hh, ww, p, p).permute(0, 1, 3, 2, 4)
+        residual = residual.reshape(b, 1, hh * p, ww * p)
+        if self.output_halo:
+            k = p + 2 * self.output_halo
+            patches = self.refine(torch.cat((z, shallow), dim=-1)).flatten(1, 2).transpose(1, 2)
+            options = dict(output_size=(hh * p, ww * p), kernel_size=k, padding=self.output_halo, stride=p)
+            divisor = F.fold(torch.ones_like(patches[:1, :, :]), **options)
+            residual = residual + F.fold(patches, **options) / divisor
         return (noisy + residual)[..., :h, :w]

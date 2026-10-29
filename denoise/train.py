@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 from torch.nn import functional as F
 
-from .common import add_noise, dataset, fixed_noise, read_json, resolve_device, save_checkpoint, setup, sha256, split_indices, tone_augment, write_json
+from .common import add_noise, dataset, fixed_noise, read_json, resolve_device, save_checkpoint, setup, sha256, split_indices, structure_augment, structure_validation, tone_augment, write_json
 from .model import Denoiser
 
 
@@ -44,6 +44,10 @@ def run(config, output, full=False, resume=None, device_name="auto", initialize=
     tone_validation = None
     if not full and cfg.get("tone_probability", 0):
         tone_validation = tone_augment(validation.float() / 255, 1, torch.Generator().manual_seed(cfg["tone_seed"]))
+    structural = structural_noise = None
+    if not full and cfg.get("structure_seed") is not None:
+        structural = structure_validation(validation, cfg["structure_seed"])
+        structural_noise = fixed_noise(structural.shape, cfg["validation_noise_seed"])
     images = images.to(device)
     model = Denoiser(**cfg["model"]).to(device)
     initialization = None
@@ -55,9 +59,11 @@ def run(config, output, full=False, resume=None, device_name="auto", initialize=
             raise ValueError("Full-data weights would contaminate the validation split")
         if not full and any(selected["config"][key] != cfg[key] for key in ("split_seed", "validation_size", "data_root")):
             raise ValueError("Initialization must preserve the validation split")
-        if selected["config"]["model"] != cfg["model"]:
+        source_arch, target_arch = selected["config"]["model"].copy(), cfg["model"].copy()
+        source_halo, target_halo = source_arch.pop("output_halo", 0), target_arch.pop("output_halo", 0)
+        if source_arch != target_arch or source_halo not in (0, target_halo):
             raise ValueError("Initialization architecture mismatch")
-        model.load_state_dict(selected["model"])
+        model.initialize(selected["model"])
         initialization = sha256(initialize)
     ema = copy.deepcopy(model).eval().requires_grad_(False)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
@@ -76,7 +82,7 @@ def run(config, output, full=False, resume=None, device_name="auto", initialize=
         history, best, start_epoch, step = state["history"], state["best"], state["epoch"], state["step"]
         initialization = state.get("initialization_sha256")
     write_json(output / "config.json", cfg)
-    write_json(output / "protocol.json", {"full": full, "train_count": len(images), "validation_count": 0 if full else len(validation), "parameters": sum(p.numel() for p in model.parameters()), "initialization_sha256": initialization, "selection": "fixed final epoch" if full else "minimum fixed-noise validation L1", "train_indices": None if full else train_ids.tolist(), "validation_indices": None if full else val_ids.tolist()})
+    write_json(output / "protocol.json", {"full": full, "train_count": len(images), "validation_count": 0 if full else len(validation), "parameters": sum(p.numel() for p in model.parameters()), "initialization_sha256": initialization, "selection": "fixed final epoch" if full else "minimum mean L1 over enabled fixed validation domains", "train_indices": None if full else train_ids.tolist(), "validation_indices": None if full else val_ids.tolist()})
     batches = math.ceil(len(images) / cfg["batch_size"])
     total_steps, warmup = cfg["epochs"] * batches, cfg["warmup_epochs"] * batches
     for epoch in range(start_epoch, cfg["epochs"]):
@@ -91,6 +97,10 @@ def run(config, output, full=False, resume=None, device_name="auto", initialize=
                 code = int(torch.randint(8, (), generator=generator, device=device))
                 clean = clean.rot90(code % 4, (-2, -1))
                 clean = clean.flip(-1) if code >= 4 else clean
+            if cfg.get("mixed_sizes", False) and bool(torch.randint(2, (), generator=generator, device=device)):
+                clean = F.pad(clean, (2,) * 4)
+            if cfg.get("structure_probability", 0):
+                clean = structure_augment(clean, cfg["structure_probability"], generator)
             if cfg.get("tone_probability", 0):
                 clean = tone_augment(clean, cfg["tone_probability"], generator)
             noisy = add_noise(clean, generator)
@@ -119,7 +129,10 @@ def run(config, output, full=False, resume=None, device_name="auto", initialize=
             row.update({"val_" + key: value for key, value in validate(ema, validation, noise, cfg["eval_batch_size"], device).items()})
             if tone_validation is not None:
                 row.update({"tone_" + key: value for key, value in validate(ema, tone_validation, noise, cfg["eval_batch_size"], device).items()})
-            row["selection_l1"] = (row["val_l1"] + row.get("tone_l1", row["val_l1"])) / 2
+            if structural is not None:
+                row.update({"structure_" + key: value for key, value in validate(ema, structural, structural_noise, cfg["eval_batch_size"], device).items()})
+            domains = [row[key] for key in ("val_l1", "tone_l1", "structure_l1") if key in row]
+            row["selection_l1"] = sum(domains) / len(domains)
         row["seconds"] = round(time.perf_counter() - begin, 3)
         history.append(row)
         improved = full or row["selection_l1"] < best

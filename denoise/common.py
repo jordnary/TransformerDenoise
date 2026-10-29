@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch.nn import functional as F
 from torchvision.datasets import MNIST
 
 SIGMA = 50 / 255
@@ -69,6 +70,35 @@ def tone_augment(clean, probability, generator):
     base = torch.where(draws[1] < 0.5, 1 - clean, clean)
     transformed = contrast * base + (1 - contrast) * draws[2]
     return torch.where(draws[3] < probability, transformed, clean)
+
+
+def structure_augment(clean, probability, generator):
+    """Affine crops and convex mixtures using only the current clean batch."""
+    if not 0 <= probability <= 1:
+        raise ValueError("Augmentation probability must be in [0, 1]")
+    if probability == 0:
+        return clean
+    n = len(clean)
+    draws = torch.rand((2 * n, 4), device=clean.device, generator=generator)
+    angle, scale = draws[:, 0] * (2 * torch.pi), 0.7 + 1.3 * draws[:, 1]
+    theta = clean.new_zeros((2 * n, 2, 3))
+    theta[:, 0, 0] = theta[:, 1, 1] = angle.cos() * scale
+    theta[:, 0, 1], theta[:, 1, 0] = -angle.sin() * scale, angle.sin() * scale
+    theta[:, :, 2] = (draws[:, 2:] * 2 - 1) * 0.65
+    source = torch.cat((clean, clean.flip(0)))
+    grid = F.affine_grid(theta, source.shape, align_corners=False)
+    first, second = F.grid_sample(source, grid, align_corners=False).chunk(2)
+    choices = torch.rand((3, n, 1, 1, 1), device=clean.device, generator=generator)
+    weight = 0.25 + 0.5 * choices[0]
+    mixed = weight * first + (1 - weight) * second
+    transformed = torch.where(choices[1] < 0.5, mixed, first)
+    return torch.where(choices[2] < probability, transformed, clean)
+
+
+def structure_validation(images, seed):
+    generator = torch.Generator().manual_seed(seed)
+    clean = F.pad(images.float() / 255, (2,) * 4)
+    return tone_augment(structure_augment(clean, 1, generator), 1, generator)
 
 
 def fixed_noise(shape, seed):

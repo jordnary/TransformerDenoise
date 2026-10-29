@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from denoise.common import SIGMA, add_noise, first_indices, fixed_noise, predict, read_json, resolve_device, save_checkpoint, scores, split_indices, tone_augment, write_json
+from denoise.common import SIGMA, add_noise, first_indices, fixed_noise, predict, read_json, resolve_device, save_checkpoint, scores, split_indices, structure_augment, structure_validation, tone_augment, write_json
 from denoise.model import Denoiser, partition, reverse, shift_mask
 from denoise.evaluate import gaussian_baseline
 from denoise.train import run
@@ -50,6 +50,46 @@ class Contracts(unittest.TestCase):
             optimizer.step()
         self.assertLess(F.l1_loss(model(noisy), clean).item(), initial)
         self.assertGreater(float(model.blocks[0].attn.qkv.weight.grad.abs().sum()), 0)
+
+    def test_overlap_initialization_and_normalization(self):
+        torch.manual_seed(16)
+        base = Denoiser(dim=16, depth=2, heads=2, halo=2)
+        nn.init.normal_(base.head.weight, std=0.01)
+        model = Denoiser(dim=16, depth=2, heads=2, halo=2, output_halo=1)
+        model.initialize(base.state_dict())
+        self.assertFalse(any(isinstance(m, nn.modules.conv._ConvNd) for m in model.modules()))
+        for shape in ((28, 28), (32, 32), (29, 31)):
+            x = torch.randn(2, 1, *shape)
+            torch.testing.assert_close(model(x), base(x), rtol=0, atol=0)
+        x = torch.randn(2, 1, 32, 32)
+        with torch.no_grad():
+            model.refine.bias.fill_(0.25)
+        torch.testing.assert_close(model(x) - base(x), torch.full_like(x, 0.25))
+        F.l1_loss(model(x), torch.zeros_like(x)).backward()
+        self.assertGreater(float(model.refine.weight.grad.abs().sum()), 0)
+        self.assertTrue(torch.isfinite(model.embed.weight.grad).all())
+        broken = dict(base.state_dict())
+        broken.pop("embed.weight")
+        with self.assertRaises(ValueError):
+            model.initialize(broken)
+
+    def test_structure_targets_and_fresh_noise(self):
+        clean = torch.rand(32, 1, 28, 28)
+        original = clean.clone()
+        torch.testing.assert_close(structure_augment(clean, 0, torch.Generator().manual_seed(3)), clean)
+        changed = structure_augment(clean, 1, torch.Generator().manual_seed(3))
+        torch.testing.assert_close(changed, structure_augment(clean, 1, torch.Generator().manual_seed(3)))
+        torch.testing.assert_close(clean, original, rtol=0, atol=0)
+        self.assertGreaterEqual(float(changed.min()), 0)
+        self.assertLessEqual(float(changed.max()), 1)
+        self.assertFalse(torch.allclose(changed, clean))
+        noise = add_noise(changed, torch.Generator().manual_seed(11)) - changed
+        self.assertAlmostEqual(float(noise.std()), SIGMA, delta=0.003)
+        torch.testing.assert_close(noise, fixed_noise(changed.shape, 11))
+        validation = structure_validation((clean * 255).byte(), 24)
+        self.assertEqual(validation.shape, (32, 1, 32, 32))
+        self.assertGreaterEqual(float(validation.min()), 0)
+        self.assertLessEqual(float(validation.max()), 1)
 
     def test_window_inverse_and_wrap_mask(self):
         x = torch.randn(3, 16, 20, 7)
@@ -109,8 +149,9 @@ class Contracts(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 resolve_device("cuda")
         cfg = read_json("configs/overlap.json")
-        cfg.update(epochs=2, validation_size=4, batch_size=4, eval_batch_size=4, tone_probability=0.5, tone_seed=6789)
-        cfg["model"].update(dim=16, depth=2, heads=2)
+        cfg.update(epochs=2, validation_size=4, batch_size=4, eval_batch_size=4, tone_probability=0.5, tone_seed=6789,
+                   structure_probability=0.5, structure_seed=2468, mixed_sizes=True)
+        cfg["model"].update(dim=16, depth=2, heads=2, output_halo=1)
         images = torch.randint(0, 256, (16, 1, 28, 28), dtype=torch.uint8)
         with tempfile.TemporaryDirectory() as directory, patch("denoise.train.dataset", return_value=(images, None)):
             root = Path(directory)
@@ -124,6 +165,7 @@ class Contracts(unittest.TestCase):
             self.assertEqual(len(history), 2)
             saved = torch.load(root / "selection/model.pt", map_location="cpu", weights_only=True)
             self.assertFalse(saved["full"])
+            self.assertIn("structure_l1", history[-1])
             expected = torch.load(root / "selection/last.pt", map_location="cpu", weights_only=False)["model"]
             restored = run(root / "config.json", root / "selection", resume=root / "epoch1.pt", device_name="cpu")
             for key in ("train_l1", "val_l1", "val_mse", "val_psnr"):
@@ -133,6 +175,8 @@ class Contracts(unittest.TestCase):
                 torch.testing.assert_close(expected[key], actual[key], rtol=0, atol=0)
             full = run(root / "config.json", root / "full", full=True, device_name="cpu", initialize=root / "selection/model.pt")
             self.assertNotIn("val_l1", full[-1])
+            with self.assertRaises(ValueError):
+                run(root / "config.json", root / "invalid", device_name="cpu", initialize=root / "full/model.pt")
 
 
 if __name__ == "__main__":
